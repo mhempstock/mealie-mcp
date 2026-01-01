@@ -2,7 +2,7 @@
 name = "mealie-mcp"
 version = "0.1.0"
 description = "MCP server for Mealie recipe and meal planning management"
-readme = "README.md"
+readme = {text = "Mealie MCP Server for recipe and meal planning management", content-type = "text/plain"}
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
