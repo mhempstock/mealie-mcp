@@ -61,26 +61,6 @@ class MealieClient:
                 return {}
             return response.json()
 
-    async def _request_multipart(
-        self,
-        method: str,
-        path: str,
-        files: dict,
-    ) -> dict:
-        """Make a multipart HTTP request to the Mealie API."""
-        url = f"{self.base_url}{path}"
-        headers = {"Authorization": f"Bearer {self.headers['Authorization'].split(' ')[1]}"}
-        async with httpx.AsyncClient() as client:
-            response = await client.request(
-                method,
-                url,
-                headers=headers,
-                files=files,
-                timeout=60.0,
-            )
-            response.raise_for_status()
-            return response.json()
-
     async def get_recipes(
         self,
         search: Optional[str] = None,
