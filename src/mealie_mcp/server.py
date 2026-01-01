@@ -521,8 +521,18 @@ async def upload_recipe_image_base64(slug: str, image_base64: str, filename: str
 
 
 def main():
-    """Run the MCP server."""
-    mcp.run()
+    """Run the MCP server with SSE transport for LibreChat compatibility."""
+    import argparse
+    parser = argparse.ArgumentParser(description="Mealie MCP Server")
+    parser.add_argument("--transport", choices=["stdio", "sse"], default="sse", help="Transport type")
+    parser.add_argument("--port", type=int, default=8000, help="Port for SSE transport")
+    parser.add_argument("--host", default="0.0.0.0", help="Host for SSE transport")
+    args = parser.parse_args()
+
+    if args.transport == "sse":
+        mcp.run(transport="sse", sse_params={"host": args.host, "port": args.port})
+    else:
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
