@@ -172,25 +172,6 @@ async def get_recipe(slug: str) -> str:
     }, indent=2)
 
 
-def _parse_list_param(value) -> list:
-    """
-    Parse a list parameter that might be a JSON string or an actual list.
-
-    LLMs sometimes send JSON-encoded strings instead of actual arrays.
-    """
-    if isinstance(value, list):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, list):
-                return parsed
-        except json.JSONDecodeError:
-            pass
-        return [value]
-    return [value]
-
-
 def _parse_ingredient(ing) -> dict:
     """
     Parse an ingredient into Mealie format.
@@ -257,12 +238,10 @@ async def create_recipe(
     Args:
         name: Name of the recipe
         description: Brief description of the recipe
-        ingredients: List of ingredients. Each can be:
-                     - A string: "2 cups flour"
-                     - An object: {"food": "flour", "quantity": 2, "unit": "cups"}
-        instructions: List of cooking steps. Each can be:
-                      - A string: "Preheat oven to 350°F"
-                      - An object: {"text": "Preheat oven to 350°F"}
+        ingredients: Array of objects. Each object should have a "note" field with the ingredient text.
+                     Example: [{"note": "2 cups flour"}, {"note": "1 tsp salt"}]
+        instructions: Array of objects. Each object should have a "text" field with the step.
+                      Example: [{"text": "Preheat oven to 350°F"}, {"text": "Mix ingredients"}]
         prep_time: Preparation time (e.g., "15 minutes")
         cook_time: Cooking time (e.g., "30 minutes")
         servings: Number of servings (e.g., "4 servings")
@@ -275,14 +254,11 @@ async def create_recipe(
     created = await client.create_recipe(name)
     slug = created
 
-    ingredient_list = _parse_list_param(ingredients)
-    instruction_list = _parse_list_param(instructions)
-
     update_data = {
         "name": name,
         "description": description,
-        "recipeIngredient": [_parse_ingredient(ing) for ing in ingredient_list],
-        "recipeInstructions": [_parse_instruction(inst) for inst in instruction_list],
+        "recipeIngredient": [_parse_ingredient(ing) for ing in ingredients],
+        "recipeInstructions": [_parse_instruction(inst) for inst in instructions],
     }
 
     if prep_time:
@@ -321,8 +297,8 @@ async def update_recipe(
         slug: The unique slug identifier for the recipe to update
         name: New name for the recipe (optional)
         description: New description (optional)
-        ingredients: List of ingredients. Each can be a string or object with food/quantity/unit fields.
-        instructions: List of cooking steps. Each can be a string or object with text field.
+        ingredients: Array of objects with "note" field. Example: [{"note": "2 cups flour"}]
+        instructions: Array of objects with "text" field. Example: [{"text": "Preheat oven"}]
         prep_time: New preparation time (optional)
         cook_time: New cooking time (optional)
         servings: New servings count (optional)
@@ -339,11 +315,9 @@ async def update_recipe(
     if description:
         update_data["description"] = description
     if ingredients:
-        ingredient_list = _parse_list_param(ingredients)
-        update_data["recipeIngredient"] = [_parse_ingredient(ing) for ing in ingredient_list]
+        update_data["recipeIngredient"] = [_parse_ingredient(ing) for ing in ingredients]
     if instructions:
-        instruction_list = _parse_list_param(instructions)
-        update_data["recipeInstructions"] = [_parse_instruction(inst) for inst in instruction_list]
+        update_data["recipeInstructions"] = [_parse_instruction(inst) for inst in instructions]
     if prep_time:
         update_data["prepTime"] = prep_time
     if cook_time:
