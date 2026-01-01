@@ -185,16 +185,12 @@ def _ensure_list(value) -> list:
 
 
 def _parse_instruction(inst) -> dict:
-    """
-    Parse an instruction into Mealie format.
-
-    Expected format: {"text": "Preheat oven to 350°F"}
-    """
-    if not isinstance(inst, dict):
-        raise ValueError(f"Instruction must be an object, got: {type(inst).__name__}")
-    if "text" not in inst:
-        raise ValueError(f"Instruction must have 'text' field, got: {inst}")
-    return {"text": inst["text"], "ingredientReferences": []}
+    """Parse an instruction into Mealie format. Accepts string or {"text": "..."}."""
+    if isinstance(inst, str):
+        return {"text": inst, "ingredientReferences": []}
+    if isinstance(inst, dict) and "text" in inst:
+        return {"text": inst["text"], "ingredientReferences": []}
+    raise ValueError(f"Instruction must be a string or object with 'text' field, got: {inst}")
 
 
 async def _ensure_unit(client: MealieClient, unit_data: Optional[dict]) -> Optional[dict]:
@@ -243,58 +239,78 @@ async def create_recipe(
     Create a new recipe in Mealie.
 
     Args:
-        name: Name of the recipe
+        name: Recipe name (required)
         description: Brief description of the recipe
-        ingredients: Array of ingredient strings that will be parsed automatically.
+        ingredients: List of ingredient strings. Each string is parsed automatically.
                      Example: ["500g spaghetti", "2 tbsp olive oil", "1 onion, diced"]
-        instructions: Array of instruction objects with a "text" field.
-                      Example: [{"text": "Preheat oven to 350°F"}, {"text": "Mix ingredients"}]
+        instructions: List of instruction strings (steps to make the recipe).
+                      Example: ["Preheat oven to 350°F", "Mix dry ingredients", "Bake for 30 minutes"]
         prep_time: Preparation time (e.g., "15 minutes")
         cook_time: Cooking time (e.g., "30 minutes")
         servings: Number of servings (e.g., "4 servings")
 
     Returns:
-        The created recipe's slug and ID
+        JSON with success status, recipe slug, and ID
     """
-    client = get_client()
+    try:
+        client = get_client()
 
-    created = await client.create_recipe(name)
-    slug = created
+        created = await client.create_recipe(name)
+        slug = created
 
-    ingredient_list = _ensure_list(ingredients)
-    instruction_list = _ensure_list(instructions)
+        ingredient_list = _ensure_list(ingredients)
+        instruction_list = _ensure_list(instructions)
 
-    parsed_ingredients = []
-    for ing in ingredient_list:
-        if isinstance(ing, dict):
-            ing = ing.get("note") or ing.get("text") or str(ing)
-        if not isinstance(ing, str):
-            raise ValueError(f"Ingredient must be a string, got: {type(ing).__name__}")
-        parsed_ingredients.append(await _parse_and_prepare_ingredient(client, ing))
+        parsed_ingredients = []
+        for ing in ingredient_list:
+            if isinstance(ing, dict):
+                ing = ing.get("note") or ing.get("text") or str(ing)
+            if not isinstance(ing, str):
+                return json.dumps({
+                    "error": f"Ingredient must be a string, got: {type(ing).__name__}",
+                    "hint": "Pass ingredients as a list of strings like [\"500g flour\", \"2 eggs\"]",
+                }, indent=2)
+            parsed_ingredients.append(await _parse_and_prepare_ingredient(client, ing))
 
-    update_data = {
-        "name": name,
-        "description": description,
-        "recipeIngredient": parsed_ingredients,
-        "recipeInstructions": [_parse_instruction(inst) for inst in instruction_list],
-    }
+        update_data = {
+            "name": name,
+            "description": description,
+            "recipeIngredient": parsed_ingredients,
+            "recipeInstructions": [_parse_instruction(inst) for inst in instruction_list],
+        }
 
-    if prep_time:
-        update_data["prepTime"] = prep_time
-    if cook_time:
-        update_data["performTime"] = cook_time
-    if servings:
-        update_data["recipeYield"] = servings
+        if prep_time:
+            update_data["prepTime"] = prep_time
+        if cook_time:
+            update_data["performTime"] = cook_time
+        if servings:
+            update_data["recipeYield"] = servings
 
-    updated = await client.patch_recipe(slug, update_data)
+        updated = await client.patch_recipe(slug, update_data)
 
-    return json.dumps({
-        "success": True,
-        "slug": updated.get("slug", slug),
-        "id": updated.get("id"),
-        "name": name,
-        "message": f"Recipe '{name}' created successfully",
-    }, indent=2)
+        return json.dumps({
+            "success": True,
+            "slug": updated.get("slug", slug),
+            "id": updated.get("id"),
+            "name": name,
+            "message": f"Recipe '{name}' created successfully",
+        }, indent=2)
+
+    except httpx.HTTPStatusError as e:
+        return json.dumps({
+            "error": f"API error: {e.response.status_code}",
+            "details": str(e),
+            "hint": "Check that all required fields are provided correctly",
+        }, indent=2)
+    except ValueError as e:
+        return json.dumps({
+            "error": str(e),
+            "hint": "Check the format of ingredients and instructions",
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "error": f"Unexpected error: {str(e)}",
+        }, indent=2)
 
 
 @mcp.tool()
@@ -312,55 +328,74 @@ async def update_recipe(
     Update an existing recipe in Mealie.
 
     Args:
-        slug: The unique slug identifier for the recipe to update
-        name: New name for the recipe (optional)
-        description: New description (optional)
-        ingredients: Array of ingredient strings. Example: ["500g flour", "2 eggs"]
-        instructions: Array of instruction objects with "text" field.
-                      Example: [{"text": "Preheat oven to 350°F"}]
-        prep_time: New preparation time (optional)
-        cook_time: New cooking time (optional)
-        servings: New servings count (optional)
+        slug: The recipe's URL slug identifier (from create_recipe or search_recipes)
+        name: New name for the recipe
+        description: New description
+        ingredients: List of ingredient strings. Example: ["500g flour", "2 eggs"]
+        instructions: List of instruction strings. Example: ["Preheat oven", "Mix ingredients"]
+        prep_time: Preparation time (e.g., "15 minutes")
+        cook_time: Cooking time (e.g., "30 minutes")
+        servings: Number of servings (e.g., "4 servings")
 
     Returns:
-        Updated recipe information
+        JSON with success status and updated recipe info
     """
-    client = get_client()
+    try:
+        client = get_client()
 
-    update_data = {}
+        update_data = {}
 
-    if name:
-        update_data["name"] = name
-    if description:
-        update_data["description"] = description
-    if ingredients:
-        ingredient_list = _ensure_list(ingredients)
-        parsed_ingredients = []
-        for ing in ingredient_list:
-            if isinstance(ing, dict):
-                ing = ing.get("note") or ing.get("text") or str(ing)
-            if not isinstance(ing, str):
-                raise ValueError(f"Ingredient must be a string, got: {type(ing).__name__}")
-            parsed_ingredients.append(await _parse_and_prepare_ingredient(client, ing))
-        update_data["recipeIngredient"] = parsed_ingredients
-    if instructions:
-        instruction_list = _ensure_list(instructions)
-        update_data["recipeInstructions"] = [_parse_instruction(inst) for inst in instruction_list]
-    if prep_time:
-        update_data["prepTime"] = prep_time
-    if cook_time:
-        update_data["performTime"] = cook_time
-    if servings:
-        update_data["recipeYield"] = servings
+        if name:
+            update_data["name"] = name
+        if description:
+            update_data["description"] = description
+        if ingredients:
+            ingredient_list = _ensure_list(ingredients)
+            parsed_ingredients = []
+            for ing in ingredient_list:
+                if isinstance(ing, dict):
+                    ing = ing.get("note") or ing.get("text") or str(ing)
+                if not isinstance(ing, str):
+                    return json.dumps({
+                        "error": f"Ingredient must be a string, got: {type(ing).__name__}",
+                        "hint": "Pass ingredients as a list of strings",
+                    }, indent=2)
+                parsed_ingredients.append(await _parse_and_prepare_ingredient(client, ing))
+            update_data["recipeIngredient"] = parsed_ingredients
+        if instructions:
+            instruction_list = _ensure_list(instructions)
+            update_data["recipeInstructions"] = [_parse_instruction(inst) for inst in instruction_list]
+        if prep_time:
+            update_data["prepTime"] = prep_time
+        if cook_time:
+            update_data["performTime"] = cook_time
+        if servings:
+            update_data["recipeYield"] = servings
 
-    updated = await client.patch_recipe(slug, update_data)
+        updated = await client.patch_recipe(slug, update_data)
 
-    return json.dumps({
-        "success": True,
-        "slug": updated.get("slug"),
-        "name": updated.get("name"),
-        "message": "Recipe updated successfully",
-    }, indent=2)
+        return json.dumps({
+            "success": True,
+            "slug": updated.get("slug"),
+            "name": updated.get("name"),
+            "message": "Recipe updated successfully",
+        }, indent=2)
+
+    except httpx.HTTPStatusError as e:
+        return json.dumps({
+            "error": f"API error: {e.response.status_code}",
+            "details": str(e),
+            "hint": "Check that the recipe slug exists and fields are correct",
+        }, indent=2)
+    except ValueError as e:
+        return json.dumps({
+            "error": str(e),
+            "hint": "Check the format of ingredients and instructions",
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "error": f"Unexpected error: {str(e)}",
+        }, indent=2)
 
 
 @mcp.tool()
