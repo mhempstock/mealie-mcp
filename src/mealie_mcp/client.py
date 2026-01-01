@@ -179,10 +179,6 @@ class MealieClient:
         """Delete a meal plan entry."""
         return await self._request("DELETE", f"/api/households/mealplans/{item_id}")
 
-    async def patch_recipe(self, slug: str, data: dict) -> dict:
-        """Partially update a recipe using PATCH."""
-        return await self._request("PATCH", f"/api/recipes/{slug}", json=data)
-
     async def parse_ingredient(self, ingredient_text: str) -> dict:
         """Parse an ingredient string into structured data."""
         result = await self._request(

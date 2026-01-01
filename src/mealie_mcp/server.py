@@ -258,6 +258,8 @@ async def create_recipe(
         created = await client.create_recipe(name)
         slug = created
 
+        recipe = await client.get_recipe(slug)
+
         ingredient_list = _ensure_list(ingredients)
         instruction_list = _ensure_list(instructions)
 
@@ -273,7 +275,12 @@ async def create_recipe(
             parsed_ingredients.append(await _parse_and_prepare_ingredient(client, ing))
 
         update_data = {
+            "id": recipe["id"],
+            "userId": recipe.get("userId"),
+            "householdId": recipe.get("householdId"),
+            "groupId": recipe.get("groupId"),
             "name": name,
+            "slug": slug,
             "description": description,
             "recipeIngredient": parsed_ingredients,
             "recipeInstructions": [_parse_instruction(inst) for inst in instruction_list],
@@ -286,7 +293,7 @@ async def create_recipe(
         if servings:
             update_data["recipeYield"] = servings
 
-        updated = await client.patch_recipe(slug, update_data)
+        updated = await client.update_recipe(slug, update_data)
 
         return json.dumps({
             "success": True,
@@ -343,10 +350,17 @@ async def update_recipe(
     try:
         client = get_client()
 
-        update_data = {}
+        recipe = await client.get_recipe(slug)
 
-        if name:
-            update_data["name"] = name
+        update_data = {
+            "id": recipe["id"],
+            "userId": recipe.get("userId"),
+            "householdId": recipe.get("householdId"),
+            "groupId": recipe.get("groupId"),
+            "name": name or recipe.get("name"),
+            "slug": slug,
+        }
+
         if description:
             update_data["description"] = description
         if ingredients:
@@ -372,7 +386,7 @@ async def update_recipe(
         if servings:
             update_data["recipeYield"] = servings
 
-        updated = await client.patch_recipe(slug, update_data)
+        updated = await client.update_recipe(slug, update_data)
 
         return json.dumps({
             "success": True,
