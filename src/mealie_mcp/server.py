@@ -172,6 +172,25 @@ async def get_recipe(slug: str) -> str:
     }, indent=2)
 
 
+def _parse_list_param(value) -> list:
+    """
+    Parse a list parameter that might be a JSON string or an actual list.
+
+    LLMs sometimes send JSON-encoded strings instead of actual arrays.
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+        return [value]
+    return [value]
+
+
 def _parse_ingredient(ing) -> dict:
     """
     Parse an ingredient into Mealie format.
@@ -256,11 +275,14 @@ async def create_recipe(
     created = await client.create_recipe(name)
     slug = created
 
+    ingredient_list = _parse_list_param(ingredients)
+    instruction_list = _parse_list_param(instructions)
+
     update_data = {
         "name": name,
         "description": description,
-        "recipeIngredient": [_parse_ingredient(ing) for ing in ingredients],
-        "recipeInstructions": [_parse_instruction(inst) for inst in instructions],
+        "recipeIngredient": [_parse_ingredient(ing) for ing in ingredient_list],
+        "recipeInstructions": [_parse_instruction(inst) for inst in instruction_list],
     }
 
     if prep_time:
@@ -317,9 +339,11 @@ async def update_recipe(
     if description:
         update_data["description"] = description
     if ingredients:
-        update_data["recipeIngredient"] = [_parse_ingredient(ing) for ing in ingredients]
+        ingredient_list = _parse_list_param(ingredients)
+        update_data["recipeIngredient"] = [_parse_ingredient(ing) for ing in ingredient_list]
     if instructions:
-        update_data["recipeInstructions"] = [_parse_instruction(inst) for inst in instructions]
+        instruction_list = _parse_list_param(instructions)
+        update_data["recipeInstructions"] = [_parse_instruction(inst) for inst in instruction_list]
     if prep_time:
         update_data["prepTime"] = prep_time
     if cook_time:
