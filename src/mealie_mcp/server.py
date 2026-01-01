@@ -172,12 +172,21 @@ async def get_recipe(slug: str) -> str:
     }, indent=2)
 
 
+def _parse_list_or_string(value):
+    """Parse input that may be a list or a JSON string."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
 @mcp.tool()
 async def create_recipe(
     name: str,
     description: str,
-    ingredients: str,
-    instructions: str,
+    ingredients: list,
+    instructions: list,
     prep_time: Optional[str] = None,
     cook_time: Optional[str] = None,
     servings: Optional[str] = None,
@@ -188,10 +197,8 @@ async def create_recipe(
     Args:
         name: Name of the recipe
         description: Brief description of the recipe
-        ingredients: JSON array of ingredients, each with 'note' (required), 'quantity' (optional), 'unit' (optional)
-                    Example: [{"note": "2 cups flour"}, {"note": "1 tsp salt"}]
-        instructions: JSON array of instruction steps, each with 'text'
-                     Example: [{"text": "Preheat oven to 350°F"}, {"text": "Mix dry ingredients"}]
+        ingredients: List of ingredients, each with 'note' field. Example: [{"note": "2 cups flour"}, {"note": "1 tsp salt"}]
+        instructions: List of instruction steps, each with 'text' field. Example: [{"text": "Preheat oven"}, {"text": "Mix ingredients"}]
         prep_time: Preparation time (e.g., "15 minutes")
         cook_time: Cooking time (e.g., "30 minutes")
         servings: Number of servings (e.g., "4 servings")
@@ -201,8 +208,8 @@ async def create_recipe(
     """
     client = get_client()
 
-    ingredient_list = json.loads(ingredients)
-    instruction_list = json.loads(instructions)
+    ingredient_list = _parse_list_or_string(ingredients)
+    instruction_list = _parse_list_or_string(instructions)
 
     created = await client.create_recipe(name)
     slug = created
@@ -243,8 +250,8 @@ async def update_recipe(
     slug: str,
     name: Optional[str] = None,
     description: Optional[str] = None,
-    ingredients: Optional[str] = None,
-    instructions: Optional[str] = None,
+    ingredients: Optional[list] = None,
+    instructions: Optional[list] = None,
     prep_time: Optional[str] = None,
     cook_time: Optional[str] = None,
     servings: Optional[str] = None,
@@ -256,8 +263,8 @@ async def update_recipe(
         slug: The unique slug identifier for the recipe to update
         name: New name for the recipe (optional)
         description: New description (optional)
-        ingredients: JSON array of ingredients to replace existing (optional)
-        instructions: JSON array of instructions to replace existing (optional)
+        ingredients: List of ingredients to replace existing (optional). Each item should have a 'note' field.
+        instructions: List of instructions to replace existing (optional). Each item should have a 'text' field.
         prep_time: New preparation time (optional)
         cook_time: New cooking time (optional)
         servings: New servings count (optional)
@@ -274,13 +281,13 @@ async def update_recipe(
     if description:
         update_data["description"] = description
     if ingredients:
-        ingredient_list = json.loads(ingredients)
+        ingredient_list = _parse_list_or_string(ingredients)
         update_data["recipeIngredient"] = [
             {"note": ing.get("note", ""), "quantity": ing.get("quantity"), "unit": ing.get("unit")}
             for ing in ingredient_list
         ]
     if instructions:
-        instruction_list = json.loads(instructions)
+        instruction_list = _parse_list_or_string(instructions)
         update_data["recipeInstructions"] = [
             {"text": inst.get("text", "")}
             for inst in instruction_list
