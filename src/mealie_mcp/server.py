@@ -589,8 +589,9 @@ async def upload_recipe_image(slug: str, image_url: str) -> str:
     """
     client = get_client()
 
-    async with httpx.AsyncClient() as http_client:
-        response = await http_client.get(image_url, timeout=30.0)
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; MealieMCP/1.0; +https://github.com/mhempstock/mealie-mcp)"}
+    async with httpx.AsyncClient(follow_redirects=True) as http_client:
+        response = await http_client.get(image_url, headers=headers, timeout=30.0)
         response.raise_for_status()
         image_data = response.content
 

@@ -117,14 +117,30 @@ class MealieClient:
 
     async def upload_recipe_image(self, slug: str, image_data: bytes, filename: str) -> dict:
         """Upload an image for a recipe."""
-        files = {
-            "image": (filename, image_data, "image/png"),
-        }
-        return await self._request_multipart(
-            "PUT",
-            f"/api/recipes/{slug}/image",
-            files=files,
-        )
+        extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else "png"
+        content_type = {
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "png": "image/png",
+            "webp": "image/webp",
+            "gif": "image/gif",
+        }.get(extension, "image/png")
+
+        url = f"{self.base_url}/api/recipes/{slug}/image"
+        headers = {"Authorization": f"Bearer {self.headers['Authorization'].split(' ')[1]}"}
+        files = {"image": (filename, image_data, content_type)}
+        data = {"extension": extension}
+
+        async with httpx.AsyncClient() as client:
+            response = await client.put(
+                url,
+                headers=headers,
+                files=files,
+                data=data,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            return response.json()
 
     async def get_meal_plans(
         self,
