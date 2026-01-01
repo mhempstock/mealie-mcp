@@ -14,6 +14,8 @@ from .client import MealieClient
 
 mcp = FastMCP(
     name="mealie",
+    host=os.environ.get("MCP_HOST", "0.0.0.0"),
+    port=int(os.environ.get("MCP_PORT", "8000")),
     instructions="""
     Mealie MCP Server for recipe and meal planning management.
 
@@ -522,17 +524,8 @@ async def upload_recipe_image_base64(slug: str, image_base64: str, filename: str
 
 def main():
     """Run the MCP server."""
-    import argparse
-    parser = argparse.ArgumentParser(description="Mealie MCP Server")
-    parser.add_argument("--transport", choices=["stdio", "sse"], default="stdio", help="Transport type")
-    parser.add_argument("--port", type=int, default=8000, help="Port for SSE transport")
-    parser.add_argument("--host", default="0.0.0.0", help="Host for SSE transport")
-    args = parser.parse_args()
-
-    if args.transport == "sse":
-        mcp.run(transport="sse", sse_params={"host": args.host, "port": args.port})
-    else:
-        mcp.run(transport="stdio")
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":
