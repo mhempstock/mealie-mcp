@@ -178,20 +178,3 @@ class MealieClient:
     async def delete_meal_plan(self, item_id: str) -> dict:
         """Delete a meal plan entry."""
         return await self._request("DELETE", f"/api/households/mealplans/{item_id}")
-
-    async def parse_ingredient(self, ingredient_text: str) -> dict:
-        """Parse an ingredient string into structured data with unit/food IDs."""
-        result = await self._request(
-            "POST",
-            "/api/parser/ingredient",
-            json={"ingredient": ingredient_text},
-        )
-        return result.get("ingredient", {})
-
-    async def create_unit(self, name: str) -> dict:
-        """Create a new unit."""
-        return await self._request("POST", "/api/units", json={"name": name})
-
-    async def create_food(self, name: str) -> dict:
-        """Create a new food."""
-        return await self._request("POST", "/api/foods", json={"name": name})
