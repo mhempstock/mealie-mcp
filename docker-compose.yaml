@@ -1,0 +1,11 @@
+services:
+  mealie-mcp:
+    build: .
+    image: ghcr.io/mhempstock/mealie-mcp:latest
+    container_name: mealie-mcp
+    restart: unless-stopped
+    ports:
+      - "8811:8000"
+    environment:
+      - MEALIE_URL=${MEALIE_URL}
+      - MEALIE_API_TOKEN=${MEALIE_API_TOKEN}
