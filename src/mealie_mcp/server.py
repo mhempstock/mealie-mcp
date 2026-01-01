@@ -172,35 +172,6 @@ async def get_recipe(slug: str) -> str:
     }, indent=2)
 
 
-def _parse_ingredient(ing) -> dict:
-    """
-    Parse an ingredient into Mealie format.
-
-    Expected format: {"quantity": 2, "unit": {"name": "cups"}, "food": {"name": "flour"}}
-    """
-    if not isinstance(ing, dict):
-        raise ValueError(f"Ingredient must be an object, got: {type(ing).__name__}")
-
-    result = {}
-    if "quantity" in ing:
-        result["quantity"] = ing["quantity"]
-    if "unit" in ing:
-        unit = ing["unit"]
-        if isinstance(unit, dict):
-            result["unit"] = unit
-        else:
-            raise ValueError(f"unit must be an object with 'name' field, got: {unit}")
-    if "food" in ing:
-        food = ing["food"]
-        if isinstance(food, dict):
-            result["food"] = food
-        else:
-            raise ValueError(f"food must be an object with 'name' field, got: {food}")
-    if "note" in ing:
-        result["note"] = ing["note"]
-    return result
-
-
 def _parse_instruction(inst) -> dict:
     """
     Parse an instruction into Mealie format.
@@ -230,11 +201,8 @@ async def create_recipe(
     Args:
         name: Name of the recipe
         description: Brief description of the recipe
-        ingredients: Array of ingredient objects with quantity, unit, and food fields.
-                     Example: [
-                       {"quantity": 2, "unit": {"name": "cups"}, "food": {"name": "flour"}},
-                       {"quantity": 1, "unit": {"name": "tsp"}, "food": {"name": "salt"}}
-                     ]
+        ingredients: Array of ingredient strings that will be parsed automatically.
+                     Example: ["500g spaghetti", "2 tbsp olive oil", "1 onion, diced"]
         instructions: Array of instruction objects with a "text" field.
                       Example: [{"text": "Preheat oven to 350°F"}, {"text": "Mix ingredients"}]
         prep_time: Preparation time (e.g., "15 minutes")
@@ -249,10 +217,17 @@ async def create_recipe(
     created = await client.create_recipe(name)
     slug = created
 
+    parsed_ingredients = []
+    for ing in ingredients:
+        if not isinstance(ing, str):
+            raise ValueError(f"Ingredient must be a string, got: {type(ing).__name__}")
+        parsed = await client.parse_ingredient(ing)
+        parsed_ingredients.append(parsed)
+
     update_data = {
         "name": name,
         "description": description,
-        "recipeIngredient": [_parse_ingredient(ing) for ing in ingredients],
+        "recipeIngredient": parsed_ingredients,
         "recipeInstructions": [_parse_instruction(inst) for inst in instructions],
     }
 
@@ -292,8 +267,7 @@ async def update_recipe(
         slug: The unique slug identifier for the recipe to update
         name: New name for the recipe (optional)
         description: New description (optional)
-        ingredients: Array of ingredient objects with quantity, unit, and food fields.
-                     Example: [{"quantity": 2, "unit": {"name": "cups"}, "food": {"name": "flour"}}]
+        ingredients: Array of ingredient strings. Example: ["500g flour", "2 eggs"]
         instructions: Array of instruction objects with "text" field.
                       Example: [{"text": "Preheat oven to 350°F"}]
         prep_time: New preparation time (optional)
@@ -312,7 +286,13 @@ async def update_recipe(
     if description:
         update_data["description"] = description
     if ingredients:
-        update_data["recipeIngredient"] = [_parse_ingredient(ing) for ing in ingredients]
+        parsed_ingredients = []
+        for ing in ingredients:
+            if not isinstance(ing, str):
+                raise ValueError(f"Ingredient must be a string, got: {type(ing).__name__}")
+            parsed = await client.parse_ingredient(ing)
+            parsed_ingredients.append(parsed)
+        update_data["recipeIngredient"] = parsed_ingredients
     if instructions:
         update_data["recipeInstructions"] = [_parse_instruction(inst) for inst in instructions]
     if prep_time:

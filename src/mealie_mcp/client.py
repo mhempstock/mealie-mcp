@@ -47,7 +47,16 @@ class MealieClient:
                 params=params,
                 timeout=30.0,
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                try:
+                    error_body = response.json()
+                except Exception:
+                    error_body = response.text
+                raise httpx.HTTPStatusError(
+                    f"{response.status_code} {response.reason_phrase}: {error_body}",
+                    request=response.request,
+                    response=response,
+                )
             if response.status_code == 204:
                 return {}
             return response.json()
@@ -100,7 +109,7 @@ class MealieClient:
 
     async def update_recipe(self, slug: str, data: dict) -> dict:
         """Update a recipe."""
-        return await self._request("PATCH", f"/api/recipes/{slug}", json=data)
+        return await self._request("PUT", f"/api/recipes/{slug}", json=data)
 
     async def delete_recipe(self, slug: str) -> dict:
         """Delete a recipe."""
@@ -169,3 +178,12 @@ class MealieClient:
     async def delete_meal_plan(self, item_id: str) -> dict:
         """Delete a meal plan entry."""
         return await self._request("DELETE", f"/api/households/mealplans/{item_id}")
+
+    async def parse_ingredient(self, ingredient_text: str) -> dict:
+        """Parse an ingredient string into structured data with unit/food IDs."""
+        result = await self._request(
+            "POST",
+            "/api/parser/ingredient",
+            json={"ingredient": ingredient_text},
+        )
+        return result.get("ingredient", {})
