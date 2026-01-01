@@ -176,50 +176,42 @@ def _parse_ingredient(ing) -> dict:
     """
     Parse an ingredient into Mealie format.
 
-    Accepts:
-    - String: "2 cups flour" -> stored in note field
-    - Dict with structured data: {"food": "flour", "quantity": 2, "unit": "cups"}
+    Expected format: {"quantity": 2, "unit": {"name": "cups"}, "food": {"name": "flour"}}
     """
-    if isinstance(ing, str):
-        return {"note": ing}
+    if not isinstance(ing, dict):
+        raise ValueError(f"Ingredient must be an object, got: {type(ing).__name__}")
 
-    if isinstance(ing, dict):
-        result = {}
-        if "food" in ing:
-            result["food"] = {"name": ing["food"]}
-        if "quantity" in ing:
-            result["quantity"] = ing["quantity"]
-        if "unit" in ing:
-            result["unit"] = {"name": ing["unit"]}
-        if "note" in ing:
-            result["note"] = ing["note"]
+    result = {}
+    if "quantity" in ing:
+        result["quantity"] = ing["quantity"]
+    if "unit" in ing:
+        unit = ing["unit"]
+        if isinstance(unit, dict):
+            result["unit"] = unit
         else:
-            parts = []
-            if ing.get("quantity"):
-                parts.append(str(ing["quantity"]))
-            if ing.get("unit"):
-                parts.append(ing["unit"])
-            if ing.get("food"):
-                parts.append(ing["food"])
-            result["note"] = " ".join(parts) if parts else ""
-        return result
-
-    return {"note": str(ing)}
+            raise ValueError(f"unit must be an object with 'name' field, got: {unit}")
+    if "food" in ing:
+        food = ing["food"]
+        if isinstance(food, dict):
+            result["food"] = food
+        else:
+            raise ValueError(f"food must be an object with 'name' field, got: {food}")
+    if "note" in ing:
+        result["note"] = ing["note"]
+    return result
 
 
 def _parse_instruction(inst) -> dict:
     """
     Parse an instruction into Mealie format.
 
-    Accepts:
-    - String: "Preheat oven to 350°F"
-    - Dict: {"text": "Preheat oven to 350°F"}
+    Expected format: {"text": "Preheat oven to 350°F"}
     """
-    if isinstance(inst, str):
-        return {"text": inst}
-    if isinstance(inst, dict):
-        return {"text": inst.get("text", str(inst))}
-    return {"text": str(inst)}
+    if not isinstance(inst, dict):
+        raise ValueError(f"Instruction must be an object, got: {type(inst).__name__}")
+    if "text" not in inst:
+        raise ValueError(f"Instruction must have 'text' field, got: {inst}")
+    return {"text": inst["text"]}
 
 
 @mcp.tool()
@@ -238,9 +230,12 @@ async def create_recipe(
     Args:
         name: Name of the recipe
         description: Brief description of the recipe
-        ingredients: Array of objects. Each object should have a "note" field with the ingredient text.
-                     Example: [{"note": "2 cups flour"}, {"note": "1 tsp salt"}]
-        instructions: Array of objects. Each object should have a "text" field with the step.
+        ingredients: Array of ingredient objects with quantity, unit, and food fields.
+                     Example: [
+                       {"quantity": 2, "unit": {"name": "cups"}, "food": {"name": "flour"}},
+                       {"quantity": 1, "unit": {"name": "tsp"}, "food": {"name": "salt"}}
+                     ]
+        instructions: Array of instruction objects with a "text" field.
                       Example: [{"text": "Preheat oven to 350°F"}, {"text": "Mix ingredients"}]
         prep_time: Preparation time (e.g., "15 minutes")
         cook_time: Cooking time (e.g., "30 minutes")
@@ -297,8 +292,10 @@ async def update_recipe(
         slug: The unique slug identifier for the recipe to update
         name: New name for the recipe (optional)
         description: New description (optional)
-        ingredients: Array of objects with "note" field. Example: [{"note": "2 cups flour"}]
-        instructions: Array of objects with "text" field. Example: [{"text": "Preheat oven"}]
+        ingredients: Array of ingredient objects with quantity, unit, and food fields.
+                     Example: [{"quantity": 2, "unit": {"name": "cups"}, "food": {"name": "flour"}}]
+        instructions: Array of instruction objects with "text" field.
+                      Example: [{"text": "Preheat oven to 350°F"}]
         prep_time: New preparation time (optional)
         cook_time: New cooking time (optional)
         servings: New servings count (optional)
