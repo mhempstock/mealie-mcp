@@ -172,6 +172,18 @@ async def get_recipe(slug: str) -> str:
     }, indent=2)
 
 
+def _ensure_list(value) -> list:
+    """Parse a value that should be a list but might be a JSON string."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        parsed = json.loads(value)
+        if not isinstance(parsed, list):
+            raise ValueError(f"Expected array, got: {type(parsed).__name__}")
+        return parsed
+    raise ValueError(f"Expected array, got: {type(value).__name__}")
+
+
 def _parse_instruction(inst) -> dict:
     """
     Parse an instruction into Mealie format.
@@ -217,8 +229,13 @@ async def create_recipe(
     created = await client.create_recipe(name)
     slug = created
 
+    ingredient_list = _ensure_list(ingredients)
+    instruction_list = _ensure_list(instructions)
+
     parsed_ingredients = []
-    for ing in ingredients:
+    for ing in ingredient_list:
+        if isinstance(ing, dict):
+            ing = ing.get("note") or ing.get("text") or str(ing)
         if not isinstance(ing, str):
             raise ValueError(f"Ingredient must be a string, got: {type(ing).__name__}")
         parsed = await client.parse_ingredient(ing)
@@ -228,7 +245,7 @@ async def create_recipe(
         "name": name,
         "description": description,
         "recipeIngredient": parsed_ingredients,
-        "recipeInstructions": [_parse_instruction(inst) for inst in instructions],
+        "recipeInstructions": [_parse_instruction(inst) for inst in instruction_list],
     }
 
     if prep_time:
@@ -286,15 +303,19 @@ async def update_recipe(
     if description:
         update_data["description"] = description
     if ingredients:
+        ingredient_list = _ensure_list(ingredients)
         parsed_ingredients = []
-        for ing in ingredients:
+        for ing in ingredient_list:
+            if isinstance(ing, dict):
+                ing = ing.get("note") or ing.get("text") or str(ing)
             if not isinstance(ing, str):
                 raise ValueError(f"Ingredient must be a string, got: {type(ing).__name__}")
             parsed = await client.parse_ingredient(ing)
             parsed_ingredients.append(parsed)
         update_data["recipeIngredient"] = parsed_ingredients
     if instructions:
-        update_data["recipeInstructions"] = [_parse_instruction(inst) for inst in instructions]
+        instruction_list = _ensure_list(instructions)
+        update_data["recipeInstructions"] = [_parse_instruction(inst) for inst in instruction_list]
     if prep_time:
         update_data["prepTime"] = prep_time
     if cook_time:
