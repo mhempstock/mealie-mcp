@@ -4,7 +4,7 @@ import os
 import json
 import base64
 import httpx
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -194,7 +194,39 @@ def _parse_instruction(inst) -> dict:
         raise ValueError(f"Instruction must be an object, got: {type(inst).__name__}")
     if "text" not in inst:
         raise ValueError(f"Instruction must have 'text' field, got: {inst}")
-    return {"text": inst["text"]}
+    return {"text": inst["text"], "ingredientReferences": []}
+
+
+async def _ensure_unit(client: MealieClient, unit_data: Optional[dict]) -> Optional[dict]:
+    """Ensure a unit exists in the database, creating it if necessary."""
+    if unit_data is None:
+        return None
+    if unit_data.get("id"):
+        return {"id": unit_data["id"], "name": unit_data["name"]}
+    result = await client.create_unit(unit_data["name"])
+    return {"id": result["id"], "name": result["name"]}
+
+
+async def _ensure_food(client: MealieClient, food_data: Optional[dict]) -> Optional[dict]:
+    """Ensure a food exists in the database, creating it if necessary."""
+    if food_data is None:
+        return None
+    if food_data.get("id"):
+        return {"id": food_data["id"], "name": food_data["name"]}
+    result = await client.create_food(food_data["name"])
+    return {"id": result["id"], "name": result["name"]}
+
+
+async def _parse_and_prepare_ingredient(client: MealieClient, ingredient_text: str) -> dict:
+    """Parse an ingredient string and ensure its unit/food exist."""
+    parsed = await client.parse_ingredient(ingredient_text)
+    return {
+        "quantity": parsed.get("quantity", 0),
+        "unit": await _ensure_unit(client, parsed.get("unit")),
+        "food": await _ensure_food(client, parsed.get("food")),
+        "note": parsed.get("note", ""),
+        "referenceId": parsed.get("referenceId"),
+    }
 
 
 @mcp.tool()
@@ -238,7 +270,7 @@ async def create_recipe(
             ing = ing.get("note") or ing.get("text") or str(ing)
         if not isinstance(ing, str):
             raise ValueError(f"Ingredient must be a string, got: {type(ing).__name__}")
-        parsed = await client.parse_ingredient(ing)
+        parsed = await _parse_and_prepare_ingredient(client, ing)
         parsed_ingredients.append(parsed)
 
     update_data = {
@@ -310,7 +342,7 @@ async def update_recipe(
                 ing = ing.get("note") or ing.get("text") or str(ing)
             if not isinstance(ing, str):
                 raise ValueError(f"Ingredient must be a string, got: {type(ing).__name__}")
-            parsed = await client.parse_ingredient(ing)
+            parsed = await _parse_and_prepare_ingredient(client, ing)
             parsed_ingredients.append(parsed)
         update_data["recipeIngredient"] = parsed_ingredients
     if instructions:
@@ -329,7 +361,7 @@ async def update_recipe(
         "success": True,
         "slug": updated.get("slug"),
         "name": updated.get("name"),
-        "message": f"Recipe updated successfully",
+        "message": "Recipe updated successfully",
     }, indent=2)
 
 
@@ -529,7 +561,9 @@ async def upload_recipe_image(slug: str, image_url: str) -> str:
 
 
 @mcp.tool()
-async def upload_recipe_image_base64(slug: str, image_base64: str, filename: str = "recipe.png") -> str:
+async def upload_recipe_image_base64(
+    slug: str, image_base64: str, filename: str = "recipe.png"
+) -> str:
     """
     Upload a base64-encoded image to a recipe.
 

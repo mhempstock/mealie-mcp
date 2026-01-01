@@ -187,3 +187,11 @@ class MealieClient:
             json={"ingredient": ingredient_text},
         )
         return result.get("ingredient", {})
+
+    async def create_unit(self, name: str) -> dict:
+        """Create a new unit."""
+        return await self._request("POST", "/api/units", json={"name": name})
+
+    async def create_food(self, name: str) -> dict:
+        """Create a new food."""
+        return await self._request("POST", "/api/foods", json={"name": name})
