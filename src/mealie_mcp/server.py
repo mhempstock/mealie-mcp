@@ -197,9 +197,36 @@ def _parse_instruction(inst) -> dict:
     return {"text": inst["text"], "ingredientReferences": []}
 
 
-def _format_ingredient(ingredient_text: str) -> dict:
-    """Format an ingredient string for Mealie."""
-    return {"note": ingredient_text, "display": ingredient_text}
+async def _ensure_unit(client: MealieClient, unit_data: Optional[dict]) -> Optional[dict]:
+    """Ensure a unit exists in the database, creating it if necessary."""
+    if unit_data is None:
+        return None
+    if unit_data.get("id"):
+        return {"id": unit_data["id"], "name": unit_data["name"]}
+    result = await client.create_unit(unit_data["name"])
+    return {"id": result["id"], "name": result["name"]}
+
+
+async def _ensure_food(client: MealieClient, food_data: Optional[dict]) -> Optional[dict]:
+    """Ensure a food exists in the database, creating it if necessary."""
+    if food_data is None:
+        return None
+    if food_data.get("id"):
+        return {"id": food_data["id"], "name": food_data["name"]}
+    result = await client.create_food(food_data["name"])
+    return {"id": result["id"], "name": result["name"]}
+
+
+async def _parse_and_prepare_ingredient(client: MealieClient, ingredient_text: str) -> dict:
+    """Parse an ingredient string and ensure its unit/food exist."""
+    parsed = await client.parse_ingredient(ingredient_text)
+    return {
+        "quantity": parsed.get("quantity"),
+        "unit": await _ensure_unit(client, parsed.get("unit")),
+        "food": await _ensure_food(client, parsed.get("food")),
+        "note": parsed.get("note", ""),
+        "display": ingredient_text,
+    }
 
 
 @mcp.tool()
@@ -237,18 +264,18 @@ async def create_recipe(
     ingredient_list = _ensure_list(ingredients)
     instruction_list = _ensure_list(instructions)
 
-    formatted_ingredients = []
+    parsed_ingredients = []
     for ing in ingredient_list:
         if isinstance(ing, dict):
             ing = ing.get("note") or ing.get("text") or str(ing)
         if not isinstance(ing, str):
             raise ValueError(f"Ingredient must be a string, got: {type(ing).__name__}")
-        formatted_ingredients.append(_format_ingredient(ing))
+        parsed_ingredients.append(await _parse_and_prepare_ingredient(client, ing))
 
     update_data = {
         "name": name,
         "description": description,
-        "recipeIngredient": formatted_ingredients,
+        "recipeIngredient": parsed_ingredients,
         "recipeInstructions": [_parse_instruction(inst) for inst in instruction_list],
     }
 
@@ -259,7 +286,7 @@ async def create_recipe(
     if servings:
         update_data["recipeYield"] = servings
 
-    updated = await client.update_recipe(slug, update_data)
+    updated = await client.patch_recipe(slug, update_data)
 
     return json.dumps({
         "success": True,
@@ -308,14 +335,14 @@ async def update_recipe(
         update_data["description"] = description
     if ingredients:
         ingredient_list = _ensure_list(ingredients)
-        formatted_ingredients = []
+        parsed_ingredients = []
         for ing in ingredient_list:
             if isinstance(ing, dict):
                 ing = ing.get("note") or ing.get("text") or str(ing)
             if not isinstance(ing, str):
                 raise ValueError(f"Ingredient must be a string, got: {type(ing).__name__}")
-            formatted_ingredients.append(_format_ingredient(ing))
-        update_data["recipeIngredient"] = formatted_ingredients
+            parsed_ingredients.append(await _parse_and_prepare_ingredient(client, ing))
+        update_data["recipeIngredient"] = parsed_ingredients
     if instructions:
         instruction_list = _ensure_list(instructions)
         update_data["recipeInstructions"] = [_parse_instruction(inst) for inst in instruction_list]
@@ -326,7 +353,7 @@ async def update_recipe(
     if servings:
         update_data["recipeYield"] = servings
 
-    updated = await client.update_recipe(slug, update_data)
+    updated = await client.patch_recipe(slug, update_data)
 
     return json.dumps({
         "success": True,
