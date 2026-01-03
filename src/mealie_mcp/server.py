@@ -218,24 +218,28 @@ async def _ensure_food(client: MealieClient, food_data: Optional[dict]) -> Optio
     return {"id": result["id"], "name": result["name"]}
 
 
+PARSE_SEMAPHORE = asyncio.Semaphore(5)
+
+
 async def _parse_and_prepare_ingredient(client: MealieClient, ingredient_text: str) -> dict:
     """Parse an ingredient string and ensure its unit/food exist."""
-    logger.info(f"Parsing ingredient: {ingredient_text}")
-    try:
-        parsed = await client.parse_ingredient(ingredient_text)
-        logger.info(f"Parsed '{ingredient_text}' -> food={parsed.get('food')}, unit={parsed.get('unit')}, qty={parsed.get('quantity')}")
-        unit = await _ensure_unit(client, parsed.get("unit"))
-        food = await _ensure_food(client, parsed.get("food"))
-        return {
-            "quantity": parsed.get("quantity"),
-            "unit": unit,
-            "food": food,
-            "note": parsed.get("note", ""),
-            "display": ingredient_text,
-        }
-    except Exception as e:
-        logger.error(f"Error parsing ingredient '{ingredient_text}': {e}", exc_info=True)
-        raise
+    async with PARSE_SEMAPHORE:
+        logger.info(f"Parsing ingredient: {ingredient_text}")
+        try:
+            parsed = await client.parse_ingredient(ingredient_text)
+            logger.info(f"Parsed '{ingredient_text}' -> food={parsed.get('food')}, unit={parsed.get('unit')}, qty={parsed.get('quantity')}")
+            unit = await _ensure_unit(client, parsed.get("unit"))
+            food = await _ensure_food(client, parsed.get("food"))
+            return {
+                "quantity": parsed.get("quantity"),
+                "unit": unit,
+                "food": food,
+                "note": parsed.get("note", ""),
+                "display": ingredient_text,
+            }
+        except Exception as e:
+            logger.error(f"Error parsing ingredient '{ingredient_text}': {e}", exc_info=True)
+            raise
 
 
 @mcp.tool()
