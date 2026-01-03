@@ -188,7 +188,7 @@ class MealieClient:
         """Delete a meal plan entry."""
         return await self._request("DELETE", f"/api/households/mealplans/{item_id}")
 
-    async def parse_ingredient(self, ingredient_text: str, parser: str = "openai") -> dict:
+    async def parse_ingredient(self, ingredient_text: str, parser: str = "nlp") -> dict:
         """Parse an ingredient string into structured data."""
         result = await self._request(
             "POST",
