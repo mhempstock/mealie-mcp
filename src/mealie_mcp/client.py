@@ -1,8 +1,11 @@
 """Mealie API client for interacting with the Mealie recipe management system."""
 
 import httpx
+import logging
 from typing import Optional
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -35,23 +38,33 @@ class MealieClient:
         path: str,
         json: Optional[dict] = None,
         params: Optional[dict] = None,
+        timeout: float = 60.0,
     ) -> dict:
         """Make an HTTP request to the Mealie API."""
         url = f"{self.base_url}{path}"
+        logger.debug(f"API {method} {path}")
         async with httpx.AsyncClient() as client:
-            response = await client.request(
-                method,
-                url,
-                headers=self.headers,
-                json=json,
-                params=params,
-                timeout=30.0,
-            )
+            try:
+                response = await client.request(
+                    method,
+                    url,
+                    headers=self.headers,
+                    json=json,
+                    params=params,
+                    timeout=timeout,
+                )
+            except httpx.TimeoutException as e:
+                logger.error(f"Timeout on {method} {path}: {e}")
+                raise
+            except Exception as e:
+                logger.error(f"Request error on {method} {path}: {e}")
+                raise
             if response.status_code >= 400:
                 try:
                     error_body = response.json()
                 except Exception:
                     error_body = response.text
+                logger.error(f"API error {response.status_code} on {method} {path}: {error_body}")
                 raise httpx.HTTPStatusError(
                     f"{response.status_code} {response.reason_phrase}: {error_body}",
                     request=response.request,

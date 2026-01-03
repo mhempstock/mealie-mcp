@@ -5,10 +5,14 @@ import json
 import asyncio
 import base64
 import httpx
+import logging
 from datetime import date, timedelta
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from .client import MealieClient
 
@@ -216,14 +220,22 @@ async def _ensure_food(client: MealieClient, food_data: Optional[dict]) -> Optio
 
 async def _parse_and_prepare_ingredient(client: MealieClient, ingredient_text: str) -> dict:
     """Parse an ingredient string and ensure its unit/food exist."""
-    parsed = await client.parse_ingredient(ingredient_text)
-    return {
-        "quantity": parsed.get("quantity"),
-        "unit": await _ensure_unit(client, parsed.get("unit")),
-        "food": await _ensure_food(client, parsed.get("food")),
-        "note": parsed.get("note", ""),
-        "display": ingredient_text,
-    }
+    logger.info(f"Parsing ingredient: {ingredient_text}")
+    try:
+        parsed = await client.parse_ingredient(ingredient_text)
+        logger.info(f"Parsed '{ingredient_text}' -> food={parsed.get('food')}, unit={parsed.get('unit')}, qty={parsed.get('quantity')}")
+        unit = await _ensure_unit(client, parsed.get("unit"))
+        food = await _ensure_food(client, parsed.get("food"))
+        return {
+            "quantity": parsed.get("quantity"),
+            "unit": unit,
+            "food": food,
+            "note": parsed.get("note", ""),
+            "display": ingredient_text,
+        }
+    except Exception as e:
+        logger.error(f"Error parsing ingredient '{ingredient_text}': {e}", exc_info=True)
+        raise
 
 
 @mcp.tool()
@@ -274,9 +286,25 @@ async def create_recipe(
                     "hint": "Pass ingredients as a list of strings like [\"500g flour\", \"2 eggs\"]",
                 }, indent=2)
             ingredient_strings.append(ing)
-        parsed_ingredients = await asyncio.gather(
-            *[_parse_and_prepare_ingredient(client, ing) for ing in ingredient_strings]
-        )
+
+        logger.info(f"Parsing {len(ingredient_strings)} ingredients in parallel...")
+        try:
+            parsed_ingredients = await asyncio.gather(
+                *[_parse_and_prepare_ingredient(client, ing) for ing in ingredient_strings],
+                return_exceptions=True
+            )
+            errors = [(i, r) for i, r in enumerate(parsed_ingredients) if isinstance(r, Exception)]
+            if errors:
+                for idx, err in errors:
+                    logger.error(f"Ingredient {idx} '{ingredient_strings[idx]}' failed: {err}")
+                return json.dumps({
+                    "error": "Failed to parse some ingredients",
+                    "details": [{"ingredient": ingredient_strings[i], "error": str(e)} for i, e in errors]
+                }, indent=2)
+            logger.info(f"Successfully parsed all {len(ingredient_strings)} ingredients")
+        except Exception as e:
+            logger.error(f"Parallel parsing failed: {e}", exc_info=True)
+            return json.dumps({"error": f"Failed to parse ingredients: {str(e)}"}, indent=2)
 
         update_data = {
             "id": recipe["id"],
@@ -379,9 +407,25 @@ async def update_recipe(
                         "hint": "Pass ingredients as a list of strings",
                     }, indent=2)
                 ingredient_strings.append(ing)
-            parsed_ingredients = await asyncio.gather(
-                *[_parse_and_prepare_ingredient(client, ing) for ing in ingredient_strings]
-            )
+
+            logger.info(f"Updating: parsing {len(ingredient_strings)} ingredients in parallel...")
+            try:
+                parsed_ingredients = await asyncio.gather(
+                    *[_parse_and_prepare_ingredient(client, ing) for ing in ingredient_strings],
+                    return_exceptions=True
+                )
+                errors = [(i, r) for i, r in enumerate(parsed_ingredients) if isinstance(r, Exception)]
+                if errors:
+                    for idx, err in errors:
+                        logger.error(f"Ingredient {idx} '{ingredient_strings[idx]}' failed: {err}")
+                    return json.dumps({
+                        "error": "Failed to parse some ingredients",
+                        "details": [{"ingredient": ingredient_strings[i], "error": str(e)} for i, e in errors]
+                    }, indent=2)
+                logger.info(f"Successfully parsed all {len(ingredient_strings)} ingredients")
+            except Exception as e:
+                logger.error(f"Parallel parsing failed: {e}", exc_info=True)
+                return json.dumps({"error": f"Failed to parse ingredients: {str(e)}"}, indent=2)
             update_data["recipeIngredient"] = parsed_ingredients
         if instructions:
             instruction_list = _ensure_list(instructions)
