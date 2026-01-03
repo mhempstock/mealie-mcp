@@ -2,6 +2,7 @@
 
 import os
 import json
+import asyncio
 import base64
 import httpx
 from datetime import date, timedelta
@@ -263,7 +264,7 @@ async def create_recipe(
         ingredient_list = _ensure_list(ingredients)
         instruction_list = _ensure_list(instructions)
 
-        parsed_ingredients = []
+        ingredient_strings = []
         for ing in ingredient_list:
             if isinstance(ing, dict):
                 ing = ing.get("note") or ing.get("text") or str(ing)
@@ -272,7 +273,10 @@ async def create_recipe(
                     "error": f"Ingredient must be a string, got: {type(ing).__name__}",
                     "hint": "Pass ingredients as a list of strings like [\"500g flour\", \"2 eggs\"]",
                 }, indent=2)
-            parsed_ingredients.append(await _parse_and_prepare_ingredient(client, ing))
+            ingredient_strings.append(ing)
+        parsed_ingredients = await asyncio.gather(
+            *[_parse_and_prepare_ingredient(client, ing) for ing in ingredient_strings]
+        )
 
         update_data = {
             "id": recipe["id"],
@@ -365,7 +369,7 @@ async def update_recipe(
             update_data["description"] = description
         if ingredients:
             ingredient_list = _ensure_list(ingredients)
-            parsed_ingredients = []
+            ingredient_strings = []
             for ing in ingredient_list:
                 if isinstance(ing, dict):
                     ing = ing.get("note") or ing.get("text") or str(ing)
@@ -374,7 +378,10 @@ async def update_recipe(
                         "error": f"Ingredient must be a string, got: {type(ing).__name__}",
                         "hint": "Pass ingredients as a list of strings",
                     }, indent=2)
-                parsed_ingredients.append(await _parse_and_prepare_ingredient(client, ing))
+                ingredient_strings.append(ing)
+            parsed_ingredients = await asyncio.gather(
+                *[_parse_and_prepare_ingredient(client, ing) for ing in ingredient_strings]
+            )
             update_data["recipeIngredient"] = parsed_ingredients
         if instructions:
             instruction_list = _ensure_list(instructions)
