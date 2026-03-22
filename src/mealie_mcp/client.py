@@ -197,10 +197,59 @@ class MealieClient:
         )
         return result.get("ingredient", {})
 
-    async def create_food(self, name: str) -> dict:
+    async def get_foods(
+        self,
+        search: Optional[str] = None,
+        page: int = 1,
+        per_page: int = 50,
+    ) -> dict:
+        """Get a paginated list of foods."""
+        params = {"page": page, "perPage": per_page}
+        if search:
+            params["search"] = search
+        return await self._request("GET", "/api/foods", params=params)
+
+    async def get_food(self, food_id: str) -> dict:
+        """Get a single food by ID."""
+        return await self._request("GET", f"/api/foods/{food_id}")
+
+    async def create_food(self, name: str, label_id: Optional[str] = None) -> dict:
         """Create a new food item."""
-        return await self._request("POST", "/api/foods", json={"name": name})
+        data = {"name": name}
+        if label_id:
+            data["labelId"] = label_id
+        return await self._request("POST", "/api/foods", json=data)
+
+    async def update_food(self, food_id: str, data: dict) -> dict:
+        """Update a food item."""
+        return await self._request("PUT", f"/api/foods/{food_id}", json=data)
+
+    async def get_labels(self, page: int = 1, per_page: int = -1) -> dict:
+        """Get all food labels/categories."""
+        params = {"page": page, "perPage": per_page}
+        return await self._request("GET", "/api/groups/labels", params=params)
+
+    async def get_units(
+        self,
+        search: Optional[str] = None,
+        page: int = 1,
+        per_page: int = 50,
+    ) -> dict:
+        """Get a paginated list of units."""
+        params = {"page": page, "perPage": per_page}
+        if search:
+            params["search"] = search
+        return await self._request("GET", "/api/units", params=params)
 
     async def create_unit(self, name: str) -> dict:
         """Create a new unit."""
         return await self._request("POST", "/api/units", json={"name": name})
+
+    async def get_shopping_lists(self, page: int = 1, per_page: int = 50) -> dict:
+        """Get all shopping lists."""
+        params = {"page": page, "perPage": per_page}
+        return await self._request("GET", "/api/households/shopping/lists", params=params)
+
+    async def get_shopping_list(self, list_id: str) -> dict:
+        """Get a specific shopping list with its items."""
+        return await self._request("GET", f"/api/households/shopping/lists/{list_id}")

@@ -31,6 +31,18 @@ mcp = FastMCP(
     - Manage meal plans (create, view, modify)
     - Get today's date for meal planning
     - Generate and upload recipe images
+    - View shopping lists and label their items
+    - Search and manage foods and labels
+
+    IMPORTANT - Ingredient and food reuse:
+    - The system automatically searches for existing foods/units before creating new ones.
+    - Use search_foods to find existing ingredients and their labels.
+    - Use list_labels to see available food categories (e.g., Produce, Dairy, Meat).
+
+    IMPORTANT - Labeling foods:
+    - After creating a recipe, use get_shopping_lists and get_shopping_list to review items.
+    - Use list_labels to get available labels, then bulk_assign_food_labels to assign
+      labels to unlabeled foods. Labels control how shopping list items are grouped in Mealie.
     """,
 )
 
@@ -198,23 +210,69 @@ def _parse_instruction(inst) -> dict:
     raise ValueError(f"Instruction must be a string or object with 'text' field, got: {inst}")
 
 
+async def _search_existing_unit(client: MealieClient, unit_name: str) -> Optional[dict]:
+    """Search for an existing unit by name (case-insensitive exact match)."""
+    result = await client.get_units(search=unit_name, page=1, per_page=50)
+    items = result.get("items", [])
+    unit_name_lower = unit_name.lower().strip()
+    for item in items:
+        if item.get("name", "").lower().strip() == unit_name_lower:
+            return item
+        if item.get("abbreviation", "").lower().strip() == unit_name_lower:
+            return item
+    return None
+
+
 async def _ensure_unit(client: MealieClient, unit_data: Optional[dict]) -> Optional[dict]:
-    """Ensure a unit exists in the database, creating it if necessary."""
+    """Ensure a unit exists in the database, reusing existing or creating if necessary."""
     if unit_data is None:
         return None
     if unit_data.get("id"):
         return {"id": unit_data["id"], "name": unit_data["name"]}
-    result = await client.create_unit(unit_data["name"])
+
+    unit_name = unit_data["name"]
+    existing = await _search_existing_unit(client, unit_name)
+    if existing:
+        return {"id": existing["id"], "name": existing["name"]}
+
+    result = await client.create_unit(unit_name)
     return {"id": result["id"], "name": result["name"]}
 
 
-async def _ensure_food(client: MealieClient, food_data: Optional[dict]) -> Optional[dict]:
-    """Ensure a food exists in the database, creating it if necessary."""
+async def _search_existing_food(client: MealieClient, food_name: str) -> Optional[dict]:
+    """Search for an existing food by name (case-insensitive exact match)."""
+    result = await client.get_foods(search=food_name, page=1, per_page=50)
+    items = result.get("items", [])
+    food_name_lower = food_name.lower().strip()
+    for item in items:
+        if item.get("name", "").lower().strip() == food_name_lower:
+            return item
+        for alias in item.get("aliases", []):
+            if isinstance(alias, dict):
+                alias_name = alias.get("name", "")
+            else:
+                alias_name = str(alias)
+            if alias_name.lower().strip() == food_name_lower:
+                return item
+    return None
+
+
+async def _ensure_food(client: MealieClient, food_data: Optional[dict], label_id: Optional[str] = None) -> Optional[dict]:
+    """Ensure a food exists in the database, reusing existing or creating if necessary."""
     if food_data is None:
         return None
     if food_data.get("id"):
         return {"id": food_data["id"], "name": food_data["name"]}
-    result = await client.create_food(food_data["name"])
+
+    food_name = food_data["name"]
+    existing = await _search_existing_food(client, food_name)
+
+    if existing:
+        if label_id and not existing.get("label"):
+            await client.update_food(existing["id"], {"id": existing["id"], "name": existing["name"], "labelId": label_id})
+        return {"id": existing["id"], "name": existing["name"]}
+
+    result = await client.create_food(food_name, label_id=label_id)
     return {"id": result["id"], "name": result["name"]}
 
 
@@ -628,6 +686,266 @@ async def delete_meal_plan(item_id: str) -> str:
         "success": True,
         "message": f"Meal plan entry '{item_id}' deleted successfully",
     })
+
+
+@mcp.tool()
+async def search_foods(query: Optional[str] = None, page: int = 1, per_page: int = 20) -> str:
+    """
+    Search for foods in the database.
+
+    Args:
+        query: Search term to filter foods by name (optional)
+        page: Page number for pagination (default: 1)
+        per_page: Number of results per page (default: 20)
+
+    Returns:
+        List of foods with their id, name, and label
+    """
+    client = get_client()
+    result = await client.get_foods(search=query, page=page, per_page=per_page)
+
+    foods = []
+    for item in result.get("items", []):
+        label = item.get("label")
+        foods.append({
+            "id": item.get("id"),
+            "name": item.get("name"),
+            "label": label.get("name") if label else None,
+            "label_id": label.get("id") if label else None,
+        })
+
+    return json.dumps({
+        "foods": foods,
+        "total": result.get("total", 0),
+        "page": page,
+        "per_page": per_page,
+    }, indent=2)
+
+
+@mcp.tool()
+async def get_food_details(food_id: str) -> str:
+    """
+    Get detailed information about a specific food.
+
+    Args:
+        food_id: The unique ID of the food
+
+    Returns:
+        Food details including name, label, and aliases
+    """
+    client = get_client()
+    food = await client.get_food(food_id)
+
+    label = food.get("label")
+    aliases = []
+    for alias in food.get("aliases", []):
+        if isinstance(alias, dict):
+            aliases.append(alias.get("name", ""))
+        else:
+            aliases.append(str(alias))
+
+    return json.dumps({
+        "id": food.get("id"),
+        "name": food.get("name"),
+        "label": label.get("name") if label else None,
+        "label_id": label.get("id") if label else None,
+        "aliases": aliases,
+    }, indent=2)
+
+
+@mcp.tool()
+async def list_labels() -> str:
+    """
+    Get all available food labels/categories (e.g., Produce, Dairy, Meat).
+
+    Returns:
+        List of all labels with their id and name
+    """
+    client = get_client()
+    result = await client.get_labels()
+
+    labels = []
+    for item in result.get("items", []):
+        labels.append({
+            "id": item.get("id"),
+            "name": item.get("name"),
+        })
+
+    return json.dumps({
+        "labels": labels,
+        "total": len(labels),
+    }, indent=2)
+
+
+@mcp.tool()
+async def assign_food_label(food_id: str, label_id: str) -> str:
+    """
+    Assign a label/category to a food.
+
+    Args:
+        food_id: The ID of the food to update
+        label_id: The ID of the label to assign (use list_labels to see available labels)
+
+    Returns:
+        Confirmation of the label assignment
+    """
+    client = get_client()
+
+    food = await client.get_food(food_id)
+
+    update_data = {
+        "id": food["id"],
+        "name": food["name"],
+        "labelId": label_id,
+    }
+
+    updated = await client.update_food(food_id, update_data)
+
+    label = updated.get("label")
+    return json.dumps({
+        "success": True,
+        "food_id": food_id,
+        "food_name": updated.get("name"),
+        "label": label.get("name") if label else None,
+        "message": f"Label assigned to '{updated.get('name')}'",
+    }, indent=2)
+
+
+@mcp.tool()
+async def get_shopping_lists() -> str:
+    """
+    Get all shopping lists.
+
+    Returns:
+        List of shopping lists with their id and name
+    """
+    client = get_client()
+    result = await client.get_shopping_lists()
+
+    lists = []
+    for item in result.get("items", []):
+        lists.append({
+            "id": item.get("id"),
+            "name": item.get("name"),
+        })
+
+    return json.dumps({
+        "shopping_lists": lists,
+        "total": result.get("total", 0),
+    }, indent=2)
+
+
+@mcp.tool()
+async def get_shopping_list(list_id: str) -> str:
+    """
+    Get a shopping list with all its items, showing which foods have labels and which don't.
+
+    Args:
+        list_id: The ID of the shopping list
+
+    Returns:
+        Shopping list details with items, their foods, and label status
+    """
+    client = get_client()
+    result = await client.get_shopping_list(list_id)
+
+    items = []
+    unlabeled_foods = []
+    for item in result.get("listItems", []):
+        food = item.get("food")
+        label = food.get("label") if food else None
+        entry = {
+            "id": item.get("id"),
+            "note": item.get("note"),
+            "quantity": item.get("quantity"),
+            "checked": item.get("checked", False),
+            "food": {
+                "id": food.get("id"),
+                "name": food.get("name"),
+                "label": label.get("name") if label else None,
+                "label_id": label.get("id") if label else None,
+            } if food else None,
+            "unit": {
+                "id": item.get("unit", {}).get("id"),
+                "name": item.get("unit", {}).get("name"),
+            } if item.get("unit") else None,
+        }
+        items.append(entry)
+        if food and not label:
+            unlabeled_foods.append({
+                "food_id": food.get("id"),
+                "food_name": food.get("name"),
+            })
+
+    seen = set()
+    unique_unlabeled = []
+    for f in unlabeled_foods:
+        if f["food_id"] not in seen:
+            seen.add(f["food_id"])
+            unique_unlabeled.append(f)
+
+    return json.dumps({
+        "id": result.get("id"),
+        "name": result.get("name"),
+        "items": items,
+        "total_items": len(items),
+        "unlabeled_foods": unique_unlabeled,
+        "unlabeled_count": len(unique_unlabeled),
+    }, indent=2)
+
+
+@mcp.tool()
+async def bulk_assign_food_labels(assignments: list) -> str:
+    """
+    Assign labels to multiple foods at once. Useful for labeling shopping list items.
+
+    Use list_labels first to get available label IDs, then get_shopping_list to find
+    unlabeled foods.
+
+    Args:
+        assignments: List of objects with "food_id" and "label_id" fields.
+                     Example: [{"food_id": "abc-123", "label_id": "def-456"}, ...]
+
+    Returns:
+        Summary of successful and failed assignments
+    """
+    client = get_client()
+    assignment_list = _ensure_list(assignments)
+
+    successes = []
+    failures = []
+
+    for item in assignment_list:
+        if not isinstance(item, dict) or "food_id" not in item or "label_id" not in item:
+            failures.append({"item": str(item), "error": "Must have 'food_id' and 'label_id' fields"})
+            continue
+
+        food_id = item["food_id"]
+        label_id = item["label_id"]
+
+        try:
+            food = await client.get_food(food_id)
+            update_data = {
+                "id": food["id"],
+                "name": food["name"],
+                "labelId": label_id,
+            }
+            updated = await client.update_food(food_id, update_data)
+            label = updated.get("label")
+            successes.append({
+                "food_id": food_id,
+                "food_name": updated.get("name"),
+                "label": label.get("name") if label else None,
+            })
+        except Exception as e:
+            failures.append({"food_id": food_id, "error": str(e)})
+
+    return json.dumps({
+        "success_count": len(successes),
+        "failure_count": len(failures),
+        "successes": successes,
+        "failures": failures if failures else None,
+    }, indent=2)
 
 
 @mcp.tool()
