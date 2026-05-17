@@ -323,6 +323,13 @@ async def _ensure_food(client: MealieClient, food_data: Optional[dict], label_id
 
 
 PARSE_SEMAPHORE = asyncio.Semaphore(5)
+FOOD_LOOKUP_SEMAPHORE = asyncio.Semaphore(10)
+
+
+async def _search_existing_food_bounded(client: MealieClient, food_name: str) -> Optional[dict]:
+    """Concurrency-bounded variant of _search_existing_food, for use in gather()."""
+    async with FOOD_LOOKUP_SEMAPHORE:
+        return await _search_existing_food(client, food_name)
 
 
 async def _parse_and_prepare_ingredient(client: MealieClient, ingredient_text: str) -> dict:
@@ -355,9 +362,10 @@ async def create_recipe(
     prep_time: Optional[str] = None,
     cook_time: Optional[str] = None,
     servings: Optional[str] = None,
+    image_url: Optional[str] = None,
 ) -> str:
     """
-    Create a new recipe in Mealie.
+    Create a new recipe in Mealie, optionally with an image.
 
     Args:
         name: Recipe name (required)
@@ -369,6 +377,8 @@ async def create_recipe(
         prep_time: Preparation time (e.g., "15 minutes")
         cook_time: Cooking time (e.g., "30 minutes")
         servings: Number of servings (e.g., "4 servings")
+        image_url: Optional URL of an image to upload after creating the recipe.
+                   Saves a separate upload_recipe_image call.
 
     Returns:
         JSON with success status, recipe slug, and ID
@@ -434,14 +444,35 @@ async def create_recipe(
             update_data["recipeYield"] = servings
 
         updated = await client.update_recipe(slug, update_data)
+        final_slug = updated.get("slug", slug)
 
-        return json.dumps({
+        image_status = None
+        if image_url:
+            try:
+                ua = "Mozilla/5.0 (compatible; MealieMCP/1.0; +https://github.com/mhempstock/mealie-mcp)"
+                async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as http_client:
+                    img_resp = await http_client.get(image_url, headers={"User-Agent": ua})
+                    img_resp.raise_for_status()
+                    image_bytes = img_resp.content
+                filename = image_url.split("/")[-1].split("?")[0]
+                if not filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+                    filename = "recipe_image.png"
+                await client.upload_recipe_image(final_slug, image_bytes, filename)
+                image_status = {"uploaded": True, "filename": filename, "bytes": len(image_bytes)}
+            except Exception as e:
+                logger.error(f"Image upload failed for {final_slug}: {e}")
+                image_status = {"uploaded": False, "error": str(e)}
+
+        result = {
             "success": True,
-            "slug": updated.get("slug", slug),
+            "slug": final_slug,
             "id": updated.get("id"),
             "name": name,
             "message": f"Recipe '{name}' created successfully",
-        }, indent=2)
+        }
+        if image_status is not None:
+            result["image"] = image_status
+        return json.dumps(result, indent=2)
 
     except httpx.HTTPStatusError as e:
         return json.dumps({
@@ -929,13 +960,6 @@ async def add_shopping_list_items(list_id: str, items: list, auto_link_foods: bo
     client = get_client()
     item_list = _ensure_list(items)
 
-    labels_result = await client.get_labels()
-    label_index = _build_label_index(labels_result.get("items", []))
-
-    payload = []
-    item_meta = []
-    unresolved_labels: list[str] = []
-
     for raw in item_list:
         if not isinstance(raw, dict) or not raw.get("note"):
             return json.dumps(
@@ -943,7 +967,24 @@ async def add_shopping_list_items(list_id: str, items: list, auto_link_foods: bo
                 indent=2,
             )
 
-        note = str(raw["note"]).strip()
+    notes = [str(raw["note"]).strip() for raw in item_list]
+
+    labels_task = client.get_labels()
+    food_tasks = (
+        [_search_existing_food_bounded(client, note) for note in notes]
+        if auto_link_foods else []
+    )
+    gathered = await asyncio.gather(labels_task, *food_tasks)
+    labels_result = gathered[0]
+    linked_foods = list(gathered[1:]) if auto_link_foods else [None] * len(notes)
+
+    label_index = _build_label_index(labels_result.get("items", []))
+
+    payload = []
+    item_meta = []
+    unresolved_labels: list[str] = []
+
+    for raw, note, linked_food in zip(item_list, notes, linked_foods):
         item: dict = {
             "shoppingListId": list_id,
             "note": note,
@@ -951,13 +992,10 @@ async def add_shopping_list_items(list_id: str, items: list, auto_link_foods: bo
             "isFood": False,
         }
 
-        linked_food = None
-        if auto_link_foods:
-            linked_food = await _search_existing_food(client, note)
-            if linked_food:
-                item["isFood"] = True
-                item["foodId"] = linked_food["id"]
-                item["note"] = ""
+        if linked_food:
+            item["isFood"] = True
+            item["foodId"] = linked_food["id"]
+            item["note"] = ""
 
         explicit_label = raw.get("label")
         if explicit_label:
@@ -1113,18 +1151,32 @@ async def add_recipe_to_shopping_list(
     """
     client = get_client()
     recipe = await client.get_recipe(recipe_slug)
+    recipe_id = recipe["id"]
 
-    before = await client.get_shopping_list(list_id)
-    before_ids = {it.get("id") for it in before.get("listItems", [])}
+    response = await client.add_recipe_to_shopping_list(list_id, recipe_id, scale=scale)
 
-    await client.add_recipe_to_shopping_list(list_id, recipe["id"], scale=scale)
+    # The response is the full updated list. New items have recipeReferences
+    # pointing at this recipe; use the list's updatedAt as the freshness cutoff.
+    list_updated_at = response.get("updatedAt", "")
+    added = []
+    for it in response.get("listItems", []):
+        refs = it.get("recipeReferences") or []
+        if not any((r or {}).get("recipeId") == recipe_id for r in refs):
+            continue
+        if (it.get("updatedAt") or it.get("createdAt") or "") >= list_updated_at[:19]:
+            added.append(it)
 
-    after = await client.get_shopping_list(list_id)
-    added = [it for it in after.get("listItems", []) if it.get("id") not in before_ids]
+    # Fallback: if filtering missed everything (e.g., second add merged into existing
+    # items via quantity bump), surface all items linked to this recipe.
+    if not added:
+        added = [
+            it for it in response.get("listItems", [])
+            if any((r or {}).get("recipeId") == recipe_id for r in (it.get("recipeReferences") or []))
+        ]
 
     return json.dumps({
         "list_id": list_id,
-        "recipe": {"id": recipe["id"], "name": recipe.get("name"), "slug": recipe.get("slug")},
+        "recipe": {"id": recipe_id, "name": recipe.get("name"), "slug": recipe.get("slug")},
         "scale": scale,
         "added_count": len(added),
         "added": [
@@ -1137,6 +1189,107 @@ async def add_recipe_to_shopping_list(
             }
             for it in added
         ],
+    }, indent=2)
+
+
+@mcp.tool()
+async def add_meal_plan_to_shopping_list(
+    list_id: str,
+    start_date: str,
+    end_date: str,
+) -> str:
+    """
+    Add every recipe scheduled between start_date and end_date (inclusive) to
+    a shopping list. The "plan my week's groceries" button.
+
+    Recipes scheduled on multiple days have their ingredients scaled accordingly
+    (e.g., pasta on Mon and Wed -> scale=2 in one combined add). Title-only meal
+    plan entries (no linked recipe) are skipped.
+
+    Args:
+        list_id: Target shopping list (from get_shopping_lists).
+        start_date: First date to include, YYYY-MM-DD.
+        end_date: Last date to include, YYYY-MM-DD (inclusive).
+
+    Returns:
+        Per-recipe summary: which recipes were added, scale used, item counts,
+        plus any meal plan entries that were skipped (title-only entries).
+    """
+    client = get_client()
+    plans = await client.get_meal_plans(start_date=start_date, end_date=end_date, per_page=200)
+
+    counts: dict = {}
+    titled_only = []
+    for entry in plans.get("items", []):
+        recipe = entry.get("recipe") or {}
+        recipe_id = recipe.get("id") or entry.get("recipeId")
+        if not recipe_id:
+            title = entry.get("title") or entry.get("text")
+            if title:
+                titled_only.append({"date": entry.get("date"), "title": title})
+            continue
+        existing = counts.get(recipe_id)
+        if existing is None:
+            counts[recipe_id] = {
+                "recipe_id": recipe_id,
+                "slug": recipe.get("slug"),
+                "name": recipe.get("name"),
+                "count": 1,
+                "dates": [entry.get("date")],
+            }
+        else:
+            existing["count"] += 1
+            existing["dates"].append(entry.get("date"))
+
+    if not counts:
+        return json.dumps({
+            "list_id": list_id,
+            "range": {"start": start_date, "end": end_date},
+            "added_recipes": [],
+            "total_items_added": 0,
+            "skipped_title_only": titled_only,
+            "message": "No recipe-linked meal plan entries in this range.",
+        }, indent=2)
+
+    async def add_one(meta: dict) -> dict:
+        try:
+            resp = await client.add_recipe_to_shopping_list(
+                list_id, meta["recipe_id"], scale=float(meta["count"])
+            )
+            items = resp.get("listItems", [])
+            recipe_items = [
+                it for it in items
+                if any((r or {}).get("recipeId") == meta["recipe_id"]
+                       for r in (it.get("recipeReferences") or []))
+            ]
+            return {
+                "recipe_id": meta["recipe_id"],
+                "slug": meta["slug"],
+                "name": meta["name"],
+                "scale": float(meta["count"]),
+                "dates": meta["dates"],
+                "items_in_list": len(recipe_items),
+                "status": "added",
+            }
+        except Exception as e:
+            logger.error(f"Failed to add recipe {meta.get('slug')}: {e}", exc_info=True)
+            return {
+                "recipe_id": meta["recipe_id"],
+                "slug": meta["slug"],
+                "name": meta["name"],
+                "status": "failed",
+                "error": str(e),
+            }
+
+    results = await asyncio.gather(*[add_one(m) for m in counts.values()])
+    total_items = sum(r.get("items_in_list", 0) for r in results if r.get("status") == "added")
+
+    return json.dumps({
+        "list_id": list_id,
+        "range": {"start": start_date, "end": end_date},
+        "added_recipes": results,
+        "total_items_added": total_items,
+        "skipped_title_only": titled_only or None,
     }, indent=2)
 
 
