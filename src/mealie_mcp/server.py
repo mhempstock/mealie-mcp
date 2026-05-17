@@ -4,6 +4,7 @@ import os
 import json
 import asyncio
 import base64
+import binascii
 import secrets
 import httpx
 import logging
@@ -94,40 +95,6 @@ def get_client() -> MealieClient:
     if not base_url or not api_token:
         raise ValueError("MEALIE_URL and MEALIE_API_TOKEN environment variables must be set")
     return MealieClient(base_url, api_token)
-
-
-@mcp.tool()
-def get_todays_date() -> str:
-    """
-    Get today's date in YYYY-MM-DD format.
-    Useful for creating meal plans for specific dates.
-    Also returns the day of the week.
-    """
-    today = date.today()
-    return json.dumps({
-        "date": today.isoformat(),
-        "day_of_week": today.strftime("%A"),
-        "formatted": today.strftime("%B %d, %Y"),
-    })
-
-
-@mcp.tool()
-def get_date_offset(days_from_today: int) -> str:
-    """
-    Get a date relative to today.
-
-    Args:
-        days_from_today: Number of days from today (positive for future, negative for past)
-
-    Returns:
-        Date information including ISO format, day of week, and formatted string
-    """
-    target_date = date.today() + timedelta(days=days_from_today)
-    return json.dumps({
-        "date": target_date.isoformat(),
-        "day_of_week": target_date.strftime("%A"),
-        "formatted": target_date.strftime("%B %d, %Y"),
-    })
 
 
 @mcp.tool()
@@ -277,6 +244,45 @@ async def _ensure_unit(client: MealieClient, unit_data: Optional[dict]) -> Optio
 
     result = await client.create_unit(unit_name)
     return {"id": result["id"], "name": result["name"]}
+
+
+def _normalize_label_name(name: str) -> str:
+    """Lowercase, strip whitespace, drop leading non-alphanumeric chars (emoji + punctuation)."""
+    if not name:
+        return ""
+    lowered = name.strip().lower()
+    i = 0
+    while i < len(lowered) and not lowered[i].isalnum():
+        i += 1
+    return lowered[i:].strip()
+
+
+def _build_label_index(labels: list) -> dict:
+    """Map normalized label name -> label dict, for both raw and emoji-stripped variants."""
+    index: dict = {}
+    for lbl in labels:
+        name = lbl.get("name") or ""
+        for variant in {name.strip().lower(), _normalize_label_name(name)}:
+            if variant:
+                index.setdefault(variant, lbl)
+    return index
+
+
+def _resolve_label(label_name: str, index: dict) -> Optional[dict]:
+    """Find a label by name: try exact, normalized, then prefix match against normalized keys."""
+    if not label_name:
+        return None
+    raw = label_name.strip().lower()
+    if raw in index:
+        return index[raw]
+    norm = _normalize_label_name(label_name)
+    if norm and norm in index:
+        return index[norm]
+    if norm:
+        for key, lbl in index.items():
+            if norm in key or key in norm:
+                return lbl
+    return None
 
 
 async def _search_existing_food(client: MealieClient, food_name: str) -> Optional[dict]:
@@ -541,12 +547,27 @@ async def update_recipe(
 
         updated = await client.update_recipe(slug, update_data)
 
-        return json.dumps({
+        new_slug = updated.get("slug")
+        response: dict = {
             "success": True,
-            "slug": updated.get("slug"),
+            "slug": new_slug,
             "name": updated.get("name"),
             "message": "Recipe updated successfully",
-        }, indent=2)
+        }
+        if new_slug and new_slug != slug:
+            response["slug_changed"] = {
+                "old": slug,
+                "new": new_slug,
+                "warning": (
+                    f"The recipe slug changed from '{slug}' to '{new_slug}' because "
+                    "Mealie regenerates slugs from the name. Existing meal plan "
+                    "entries link to the recipe by ID (not slug), so they remain "
+                    "valid; but any external references using the old slug "
+                    "(bookmarks, links shared elsewhere) will 404. Use the new "
+                    "slug in subsequent calls."
+                ),
+            }
+        return json.dumps(response, indent=2)
 
     except httpx.HTTPStatusError as e:
         return json.dumps({
@@ -582,37 +603,6 @@ async def delete_recipe(slug: str) -> str:
         "success": True,
         "message": f"Recipe '{slug}' deleted successfully",
     })
-
-
-@mcp.tool()
-async def get_todays_meals() -> str:
-    """
-    Get all meal plan entries for today.
-
-    Returns:
-        List of today's planned meals with their details
-    """
-    client = get_client()
-    meals = await client.get_todays_meals()
-
-    result = []
-    for meal in meals:
-        result.append({
-            "id": meal.get("id"),
-            "date": meal.get("date"),
-            "entry_type": meal.get("entryType"),
-            "title": meal.get("title"),
-            "recipe": {
-                "id": meal.get("recipe", {}).get("id") if meal.get("recipe") else None,
-                "name": meal.get("recipe", {}).get("name") if meal.get("recipe") else None,
-                "slug": meal.get("recipe", {}).get("slug") if meal.get("recipe") else None,
-            } if meal.get("recipe") else None,
-        })
-
-    return json.dumps({
-        "date": date.today().isoformat(),
-        "meals": result,
-    }, indent=2)
 
 
 @mcp.tool()
@@ -818,40 +808,6 @@ async def list_labels() -> str:
 
 
 @mcp.tool()
-async def assign_food_label(food_id: str, label_id: str) -> str:
-    """
-    Assign a label/category to a food.
-
-    Args:
-        food_id: The ID of the food to update
-        label_id: The ID of the label to assign (use list_labels to see available labels)
-
-    Returns:
-        Confirmation of the label assignment
-    """
-    client = get_client()
-
-    food = await client.get_food(food_id)
-
-    update_data = {
-        "id": food["id"],
-        "name": food["name"],
-        "labelId": label_id,
-    }
-
-    updated = await client.update_food(food_id, update_data)
-
-    label = updated.get("label")
-    return json.dumps({
-        "success": True,
-        "food_id": food_id,
-        "food_name": updated.get("name"),
-        "label": label.get("name") if label else None,
-        "message": f"Label assigned to '{updated.get('name')}'",
-    }, indent=2)
-
-
-@mcp.tool()
 async def get_shopping_lists() -> str:
     """
     Get all shopping lists.
@@ -893,17 +849,21 @@ async def get_shopping_list(list_id: str) -> str:
     unlabeled_foods = []
     for item in result.get("listItems", []):
         food = item.get("food")
-        label = food.get("label") if food else None
+        food_label = food.get("label") if food else None
+        item_label = item.get("label")
+        effective_label = item_label or food_label
         entry = {
             "id": item.get("id"),
             "note": item.get("note"),
             "quantity": item.get("quantity"),
             "checked": item.get("checked", False),
+            "label": effective_label.get("name") if effective_label else None,
+            "label_id": effective_label.get("id") if effective_label else None,
             "food": {
                 "id": food.get("id"),
                 "name": food.get("name"),
-                "label": label.get("name") if label else None,
-                "label_id": label.get("id") if label else None,
+                "label": food_label.get("name") if food_label else None,
+                "label_id": food_label.get("id") if food_label else None,
             } if food else None,
             "unit": {
                 "id": item.get("unit", {}).get("id"),
@@ -911,7 +871,7 @@ async def get_shopping_list(list_id: str) -> str:
             } if item.get("unit") else None,
         }
         items.append(entry)
-        if food and not label:
+        if food and not food_label:
             unlabeled_foods.append({
                 "food_id": food.get("id"),
                 "food_name": food.get("name"),
@@ -935,42 +895,47 @@ async def get_shopping_list(list_id: str) -> str:
 
 
 @mcp.tool()
-async def add_shopping_list_items(list_id: str, items: list) -> str:
+async def add_shopping_list_items(list_id: str, items: list, auto_link_foods: bool = True) -> str:
     """
-    Add one or more items to a shopping list, optionally categorised by label.
+    Add one or more items to a shopping list.
 
     Each item should be an object with:
-      - note (required): the item text (e.g., "1 lb ground beef", "bananas")
+      - note (required): the item text (e.g., "1 lb ground beef", "bananas").
+        If auto_link_foods is true (default), the note is searched against the
+        existing food database. If a food is matched by name or alias, the item
+        is linked to it and inherits that food's label/category automatically.
       - quantity (optional): numeric quantity, default 1
-      - label (optional): category name like "Produce", "Dairy", "Meat".
-        Matched case-insensitively against existing labels via list_labels.
-        Unknown labels are silently dropped (the item is still added, just
-        uncategorised) and reported in the result.
+      - label (optional): override category name like "Produce" or
+        "🥩 Meat & Poultry". Matched case-insensitively and ignoring any
+        leading emoji/punctuation, with a substring fallback. An explicit label
+        overrides whatever the matched food carries.
 
     Args:
         list_id: The shopping list to add items to (from get_shopping_lists).
         items: List of item objects. Example:
             [
-              {"note": "2 lemons", "label": "Produce"},
-              {"note": "ground beef", "quantity": 1, "label": "Meat"},
-              {"note": "batteries"}
+              {"note": "Garlic"},                          # auto-links to Garlic food
+              {"note": "ground beef", "quantity": 2,
+               "label": "Meat & Poultry"},                 # explicit category
+              {"note": "batteries"}                        # plain text, no food, no label
             ]
+        auto_link_foods: When true, fuzzy-match notes against existing foods.
+                         Disable for free-text-only items.
 
     Returns:
-        Summary of created items, plus any labels that could not be resolved.
+        Per-item result: linked food name (if any), effective label, and any
+        labels that could not be resolved.
     """
     client = get_client()
     item_list = _ensure_list(items)
 
     labels_result = await client.get_labels()
-    label_by_name = {
-        (lbl.get("name") or "").strip().lower(): lbl.get("id")
-        for lbl in labels_result.get("items", [])
-        if lbl.get("id")
-    }
+    label_index = _build_label_index(labels_result.get("items", []))
 
     payload = []
-    unresolved_labels = []
+    item_meta = []
+    unresolved_labels: list[str] = []
+
     for raw in item_list:
         if not isinstance(raw, dict) or not raw.get("note"):
             return json.dumps(
@@ -978,43 +943,201 @@ async def add_shopping_list_items(list_id: str, items: list) -> str:
                 indent=2,
             )
 
+        note = str(raw["note"]).strip()
         item: dict = {
             "shoppingListId": list_id,
-            "note": str(raw["note"]),
+            "note": note,
             "quantity": float(raw.get("quantity", 1)),
             "isFood": False,
         }
 
-        label_name = raw.get("label")
-        if label_name:
-            label_id = label_by_name.get(label_name.strip().lower())
-            if label_id:
-                item["labelId"] = label_id
-            elif label_name not in unresolved_labels:
-                unresolved_labels.append(label_name)
+        linked_food = None
+        if auto_link_foods:
+            linked_food = await _search_existing_food(client, note)
+            if linked_food:
+                item["isFood"] = True
+                item["foodId"] = linked_food["id"]
+                item["note"] = ""
+
+        explicit_label = raw.get("label")
+        if explicit_label:
+            resolved = _resolve_label(explicit_label, label_index)
+            if resolved:
+                item["labelId"] = resolved["id"]
+            elif explicit_label not in unresolved_labels:
+                unresolved_labels.append(explicit_label)
 
         payload.append(item)
+        item_meta.append({"original_note": note, "linked_food": linked_food})
 
     created = await client.create_shopping_list_items(payload)
     created_list = created if isinstance(created, list) else created.get("createdItems", [])
 
+    rows = []
+    for created_item, meta in zip(created_list, item_meta):
+        label_obj = created_item.get("label")
+        food_obj = created_item.get("food")
+        food_label = (food_obj or {}).get("label")
+        rows.append({
+            "id": created_item.get("id"),
+            "note": meta["original_note"],
+            "quantity": created_item.get("quantity"),
+            "linked_food": (meta["linked_food"] or {}).get("name") if meta["linked_food"] else None,
+            "label": (label_obj or food_label or {}).get("name"),
+        })
+
     return json.dumps(
         {
             "list_id": list_id,
-            "created_count": len(created_list),
-            "created": [
-                {
-                    "id": it.get("id"),
-                    "note": it.get("note"),
-                    "quantity": it.get("quantity"),
-                    "label": (it.get("label") or {}).get("name"),
-                }
-                for it in created_list
-            ],
+            "created_count": len(rows),
+            "items": rows,
             "unresolved_labels": unresolved_labels or None,
         },
         indent=2,
     )
+
+
+@mcp.tool()
+async def update_shopping_list_item(
+    item_id: str,
+    note: Optional[str] = None,
+    quantity: Optional[float] = None,
+    label: Optional[str] = None,
+    food_id: Optional[str] = None,
+    checked: Optional[bool] = None,
+) -> str:
+    """
+    Update a single shopping list item.
+
+    Only the fields you pass are changed; everything else is preserved. To
+    clear a label, pass label="". To unlink a food, pass food_id="".
+
+    Args:
+        item_id: The shopping list item ID (from get_shopping_list).
+        note: New free-text note.
+        quantity: New numeric quantity.
+        label: New category name (matched like in add_shopping_list_items).
+        food_id: Link/unlink to a specific food. Empty string clears the link.
+        checked: Mark item checked/unchecked.
+
+    Returns:
+        The updated item with its effective label.
+    """
+    client = get_client()
+    current = await client.get_shopping_list_item(item_id)
+
+    update: dict = {
+        "id": current["id"],
+        "shoppingListId": current["shoppingListId"],
+        "note": current.get("note", "") if note is None else note,
+        "quantity": current.get("quantity", 1) if quantity is None else float(quantity),
+        "isFood": current.get("isFood", False),
+        "foodId": current.get("foodId"),
+        "labelId": current.get("labelId"),
+        "unitId": current.get("unitId"),
+        "checked": current.get("checked", False) if checked is None else bool(checked),
+        "position": current.get("position", 0),
+        "extras": current.get("extras") or {},
+    }
+
+    if food_id is not None:
+        if food_id == "":
+            update["foodId"] = None
+            update["isFood"] = False
+        else:
+            update["foodId"] = food_id
+            update["isFood"] = True
+
+    if label is not None:
+        if label == "":
+            update["labelId"] = None
+        else:
+            labels_result = await client.get_labels()
+            resolved = _resolve_label(label, _build_label_index(labels_result.get("items", [])))
+            if not resolved:
+                return json.dumps({"error": f"Label not found: {label!r}"}, indent=2)
+            update["labelId"] = resolved["id"]
+
+    response = await client.update_shopping_list_item(item_id, update)
+    updated_items = response.get("updatedItems") if isinstance(response, dict) else None
+    updated = updated_items[0] if updated_items else (response if isinstance(response, dict) else {})
+    label_obj = updated.get("label") or (updated.get("food") or {}).get("label")
+    return json.dumps({
+        "id": updated.get("id"),
+        "note": updated.get("note"),
+        "quantity": updated.get("quantity"),
+        "checked": updated.get("checked"),
+        "label": (label_obj or {}).get("name"),
+        "linked_food": (updated.get("food") or {}).get("name"),
+    }, indent=2)
+
+
+@mcp.tool()
+async def delete_shopping_list_items(item_ids: list) -> str:
+    """
+    Delete one or more shopping list items in a single call.
+
+    Args:
+        item_ids: List of shopping list item IDs to delete.
+
+    Returns:
+        Number of items deleted.
+    """
+    client = get_client()
+    ids = _ensure_list(item_ids)
+    await client.delete_shopping_list_items(ids)
+    return json.dumps({"deleted_count": len(ids), "ids": ids}, indent=2)
+
+
+@mcp.tool()
+async def add_recipe_to_shopping_list(
+    list_id: str,
+    recipe_slug: str,
+    scale: float = 1.0,
+) -> str:
+    """
+    Add all ingredients from a recipe to a shopping list, scaled if desired.
+
+    Mirrors Mealie's "Add to shopping list" button. Items come in pre-linked to
+    their foods (so labels apply automatically) and tagged with the source
+    recipe so they can be removed together later.
+
+    Args:
+        list_id: Target shopping list ID (from get_shopping_lists).
+        recipe_slug: The recipe to add (slug or ID, e.g., "homemade-pizza").
+        scale: Multiplier for the recipe quantities (default 1.0). Use 2.0 to
+               double, 0.5 to halve.
+
+    Returns:
+        Number of items added and their notes/foods.
+    """
+    client = get_client()
+    recipe = await client.get_recipe(recipe_slug)
+
+    before = await client.get_shopping_list(list_id)
+    before_ids = {it.get("id") for it in before.get("listItems", [])}
+
+    await client.add_recipe_to_shopping_list(list_id, recipe["id"], scale=scale)
+
+    after = await client.get_shopping_list(list_id)
+    added = [it for it in after.get("listItems", []) if it.get("id") not in before_ids]
+
+    return json.dumps({
+        "list_id": list_id,
+        "recipe": {"id": recipe["id"], "name": recipe.get("name"), "slug": recipe.get("slug")},
+        "scale": scale,
+        "added_count": len(added),
+        "added": [
+            {
+                "id": it.get("id"),
+                "food": (it.get("food") or {}).get("name"),
+                "quantity": it.get("quantity"),
+                "note": it.get("note"),
+                "label": ((it.get("label") or (it.get("food") or {}).get("label")) or {}).get("name"),
+            }
+            for it in added
+        ],
+    }, indent=2)
 
 
 @mcp.tool()
@@ -1072,61 +1195,63 @@ async def bulk_assign_food_labels(assignments: list) -> str:
 
 
 @mcp.tool()
-async def upload_recipe_image(slug: str, image_url: str) -> str:
+async def upload_recipe_image(
+    slug: str,
+    image_url: Optional[str] = None,
+    image_base64: Optional[str] = None,
+    filename: Optional[str] = None,
+) -> str:
     """
-    Upload an image to a recipe from a URL.
+    Upload an image to a recipe from either a URL or base64-encoded data.
+
+    Exactly one of image_url or image_base64 must be provided.
 
     Args:
-        slug: The recipe slug to upload the image to
-        image_url: URL of the image to download and upload
+        slug: The recipe slug to upload the image to.
+        image_url: URL of an image to download and upload.
+        image_base64: Base64-encoded image bytes. A data URI prefix such as
+            "data:image/jpeg;base64," is tolerated and stripped.
+        filename: Optional filename hint. If omitted, derived from image_url
+            or defaults to "recipe.png".
 
     Returns:
-        Confirmation of image upload
+        Confirmation of image upload.
     """
+    if (image_url is None) == (image_base64 is None):
+        return json.dumps(
+            {"error": "Provide exactly one of image_url or image_base64."},
+            indent=2,
+        )
+
     client = get_client()
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; MealieMCP/1.0; +https://github.com/mhempstock/mealie-mcp)"}
-    async with httpx.AsyncClient(follow_redirects=True) as http_client:
-        response = await http_client.get(image_url, headers=headers, timeout=30.0)
-        response.raise_for_status()
-        image_data = response.content
+    if image_url is not None:
+        ua = "Mozilla/5.0 (compatible; MealieMCP/1.0; +https://github.com/mhempstock/mealie-mcp)"
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as http_client:
+            response = await http_client.get(image_url, headers={"User-Agent": ua})
+            response.raise_for_status()
+            image_data = response.content
+        if not filename:
+            filename = image_url.split("/")[-1].split("?")[0]
+    else:
+        b64 = image_base64.strip()
+        if b64.startswith("data:") and "," in b64:
+            b64 = b64.split(",", 1)[1]
+        b64 = "".join(b64.split())
+        try:
+            image_data = base64.b64decode(b64, validate=True)
+        except (binascii.Error, ValueError) as e:
+            return json.dumps({"error": f"Invalid base64 image data: {e}"}, indent=2)
 
-    filename = image_url.split("/")[-1].split("?")[0]
-    if not filename.endswith((".png", ".jpg", ".jpeg", ".webp")):
+    if not filename or not filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
         filename = "recipe_image.png"
 
     await client.upload_recipe_image(slug, image_data, filename)
-
     return json.dumps({
         "success": True,
         "slug": slug,
-        "message": f"Image uploaded successfully to recipe '{slug}'",
-    })
-
-
-@mcp.tool()
-async def upload_recipe_image_base64(
-    slug: str, image_base64: str, filename: str = "recipe.png"
-) -> str:
-    """
-    Upload a base64-encoded image to a recipe.
-
-    Args:
-        slug: The recipe slug to upload the image to
-        image_base64: Base64-encoded image data
-        filename: Filename for the image (default: recipe.png)
-
-    Returns:
-        Confirmation of image upload
-    """
-    client = get_client()
-
-    image_data = base64.b64decode(image_base64)
-    await client.upload_recipe_image(slug, image_data, filename)
-
-    return json.dumps({
-        "success": True,
-        "slug": slug,
+        "filename": filename,
+        "bytes": len(image_data),
         "message": f"Image uploaded successfully to recipe '{slug}'",
     })
 

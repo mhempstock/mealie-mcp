@@ -259,3 +259,42 @@ class MealieClient:
         return await self._request(
             "POST", "/api/households/shopping/items/create-bulk", json=items
         )
+
+    async def get_shopping_list_item(self, item_id: str) -> dict:
+        """Fetch a single shopping list item."""
+        return await self._request(
+            "GET", f"/api/households/shopping/items/{item_id}"
+        )
+
+    async def update_shopping_list_item(self, item_id: str, data: dict) -> dict:
+        """Update a single shopping list item."""
+        return await self._request(
+            "PUT", f"/api/households/shopping/items/{item_id}", json=data
+        )
+
+    async def delete_shopping_list_items(self, item_ids: list) -> dict:
+        """Delete one or more shopping list items in one call."""
+        return await self._request(
+            "DELETE",
+            "/api/households/shopping/items",
+            params={"ids": list(item_ids)},
+        )
+
+    async def add_recipe_to_shopping_list(
+        self,
+        list_id: str,
+        recipe_id: str,
+        scale: float = 1.0,
+    ) -> dict:
+        """Add a recipe's ingredients to a shopping list."""
+        return await self._request(
+            "POST",
+            f"/api/households/shopping/lists/{list_id}/recipe/{recipe_id}",
+            json={"recipeIncrementQuantity": scale},
+        )
+
+    async def get_meal_plan(self, item_id: str) -> dict:
+        """Fetch a single meal plan entry."""
+        return await self._request(
+            "GET", f"/api/households/mealplans/{item_id}"
+        )
