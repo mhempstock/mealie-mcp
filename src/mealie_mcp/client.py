@@ -253,3 +253,9 @@ class MealieClient:
     async def get_shopping_list(self, list_id: str) -> dict:
         """Get a specific shopping list with its items."""
         return await self._request("GET", f"/api/households/shopping/lists/{list_id}")
+
+    async def create_shopping_list_items(self, items: list) -> list:
+        """Create one or more shopping list items in bulk."""
+        return await self._request(
+            "POST", "/api/households/shopping/items/create-bulk", json=items
+        )

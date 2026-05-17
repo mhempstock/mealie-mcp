@@ -935,6 +935,89 @@ async def get_shopping_list(list_id: str) -> str:
 
 
 @mcp.tool()
+async def add_shopping_list_items(list_id: str, items: list) -> str:
+    """
+    Add one or more items to a shopping list, optionally categorised by label.
+
+    Each item should be an object with:
+      - note (required): the item text (e.g., "1 lb ground beef", "bananas")
+      - quantity (optional): numeric quantity, default 1
+      - label (optional): category name like "Produce", "Dairy", "Meat".
+        Matched case-insensitively against existing labels via list_labels.
+        Unknown labels are silently dropped (the item is still added, just
+        uncategorised) and reported in the result.
+
+    Args:
+        list_id: The shopping list to add items to (from get_shopping_lists).
+        items: List of item objects. Example:
+            [
+              {"note": "2 lemons", "label": "Produce"},
+              {"note": "ground beef", "quantity": 1, "label": "Meat"},
+              {"note": "batteries"}
+            ]
+
+    Returns:
+        Summary of created items, plus any labels that could not be resolved.
+    """
+    client = get_client()
+    item_list = _ensure_list(items)
+
+    labels_result = await client.get_labels()
+    label_by_name = {
+        (lbl.get("name") or "").strip().lower(): lbl.get("id")
+        for lbl in labels_result.get("items", [])
+        if lbl.get("id")
+    }
+
+    payload = []
+    unresolved_labels = []
+    for raw in item_list:
+        if not isinstance(raw, dict) or not raw.get("note"):
+            return json.dumps(
+                {"error": "Each item must be an object with a 'note' field", "bad_item": str(raw)},
+                indent=2,
+            )
+
+        item: dict = {
+            "shoppingListId": list_id,
+            "note": str(raw["note"]),
+            "quantity": float(raw.get("quantity", 1)),
+            "isFood": False,
+        }
+
+        label_name = raw.get("label")
+        if label_name:
+            label_id = label_by_name.get(label_name.strip().lower())
+            if label_id:
+                item["labelId"] = label_id
+            elif label_name not in unresolved_labels:
+                unresolved_labels.append(label_name)
+
+        payload.append(item)
+
+    created = await client.create_shopping_list_items(payload)
+    created_list = created if isinstance(created, list) else created.get("createdItems", [])
+
+    return json.dumps(
+        {
+            "list_id": list_id,
+            "created_count": len(created_list),
+            "created": [
+                {
+                    "id": it.get("id"),
+                    "note": it.get("note"),
+                    "quantity": it.get("quantity"),
+                    "label": (it.get("label") or {}).get("name"),
+                }
+                for it in created_list
+            ],
+            "unresolved_labels": unresolved_labels or None,
+        },
+        indent=2,
+    )
+
+
+@mcp.tool()
 async def bulk_assign_food_labels(assignments: list) -> str:
     """
     Assign labels to multiple foods at once. Useful for labeling shopping list items.
