@@ -4,12 +4,15 @@ import os
 import json
 import asyncio
 import base64
+import secrets
 import httpx
 import logging
 from datetime import date, timedelta
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.auth.provider import AccessToken, TokenVerifier
+from mcp.server.auth.settings import AuthSettings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,11 +20,7 @@ logger = logging.getLogger(__name__)
 from .client import MealieClient
 
 
-mcp = FastMCP(
-    name="mealie",
-    host=os.environ.get("MCP_HOST", "0.0.0.0"),
-    port=int(os.environ.get("MCP_PORT", "8000")),
-    instructions="""
+INSTRUCTIONS = """
     Mealie MCP Server for recipe and meal planning management.
 
     Use these tools to:
@@ -43,8 +42,49 @@ mcp = FastMCP(
     - After creating a recipe, use get_shopping_lists and get_shopping_list to review items.
     - Use list_labels to get available labels, then bulk_assign_food_labels to assign
       labels to unlabeled foods. Labels control how shopping list items are grouped in Mealie.
-    """,
-)
+    """
+
+
+class StaticTokenVerifier(TokenVerifier):
+    """Bearer-token verifier that accepts a single statically-configured token."""
+
+    def __init__(self, expected: str):
+        self._expected = expected
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        if secrets.compare_digest(token, self._expected):
+            return AccessToken(token=token, client_id="static", scopes=["mealie"])
+        return None
+
+
+def _build_mcp() -> FastMCP:
+    auth_token = os.environ.get("MCP_AUTH_TOKEN")
+    public_url = os.environ.get("MCP_PUBLIC_URL")
+
+    kwargs: dict = {
+        "name": "mealie",
+        "host": os.environ.get("MCP_HOST", "0.0.0.0"),
+        "port": int(os.environ.get("MCP_PORT", "8000")),
+        "instructions": INSTRUCTIONS,
+    }
+
+    if auth_token:
+        if not public_url:
+            raise ValueError("MCP_PUBLIC_URL must be set when MCP_AUTH_TOKEN is set")
+        kwargs["token_verifier"] = StaticTokenVerifier(auth_token)
+        kwargs["auth"] = AuthSettings(
+            issuer_url=public_url,
+            resource_server_url=public_url,
+            required_scopes=["mealie"],
+        )
+        logger.info("MCP server starting with bearer-token auth enabled")
+    else:
+        logger.info("MCP server starting without authentication")
+
+    return FastMCP(**kwargs)
+
+
+mcp = _build_mcp()
 
 
 def get_client() -> MealieClient:
